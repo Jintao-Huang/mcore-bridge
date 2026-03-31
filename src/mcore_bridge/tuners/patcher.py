@@ -34,19 +34,26 @@ def dispatch_megatron(
 
 model.dispatch_megatron = dispatch_megatron
 
-__origin_init__ = LoraModel.__init__
+
+def _patch_lora_model():
+    if hasattr(LoraModel, '_mcore_patched'):
+        pass
+
+    __origin_init__ = LoraModel.__init__
+
+    def __new_init__(self, *args, **kwargs):
+        __origin_init__(self, *args, **kwargs)
+        if not isinstance(self.model, MegatronModule):
+            return
+        for m in self.model.modules():
+            if isinstance(m, LoraLinear):
+                assert not isinstance(m, LoraParallelLinear)
+                for p in m.parameters():
+                    if p.requires_grad:
+                        p.average_gradients_across_tp_domain = True
+
+    LoraModel.__init__ = __new_init__
+    LoraModel._mcore_patched = True
 
 
-def __new_init__(self, *args, **kwargs):
-    __origin_init__(self, *args, **kwargs)
-    if not isinstance(self.model, MegatronModule):
-        return
-    for m in self.model.modules():
-        if isinstance(m, LoraLinear):
-            assert not isinstance(m, LoraParallelLinear)
-            for p in m.parameters():
-                if p.requires_grad:
-                    p.average_gradients_across_tp_domain = True
-
-
-LoraModel.__init__ = __new_init__
+_patch_lora_model()
