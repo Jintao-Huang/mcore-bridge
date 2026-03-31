@@ -37,7 +37,7 @@ model.dispatch_megatron = dispatch_megatron
 
 def _patch_lora_model():
     if hasattr(LoraModel, '_mcore_patched'):
-        pass
+        return
 
     __origin_init__ = LoraModel.__init__
 
