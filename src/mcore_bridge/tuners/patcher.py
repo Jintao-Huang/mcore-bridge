@@ -1,4 +1,5 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import copy
 from contextlib import contextmanager
 from megatron.core.extensions.transformer_engine import TEGroupedLinear, TELayerNormColumnParallelLinear, TELinear
 from megatron.core.transformer.module import MegatronModule
@@ -37,23 +38,29 @@ model.dispatch_megatron = dispatch_megatron
 
 
 @contextmanager
+@contextmanager
 def _patch_deepcopy():
-    import copy
     _origin_deepcopy = copy.deepcopy
+    copy_keys = ('tp_group', '_tp_group', 'config')
 
     def new_deepcopy(x, *args, **kwargs):
-        copy_keys = ['tp_group', '_tp_group', 'config']
-        saved_values = {}
+        if not isinstance(x, nn.Module):
+            return _origin_deepcopy(x, *args, **kwargs)
 
+        saved_values = {}
         for key in copy_keys:
             val = getattr(x, key, None)
             if val is not None:
                 saved_values[key] = val
                 setattr(x, key, None)
 
-        res = _origin_deepcopy(x, *args, **kwargs)
+        try:
+            res = _origin_deepcopy(x, *args, **kwargs)
+        finally:
+            for key, value in saved_values.items():
+                setattr(x, key, value)
+
         for key, value in saved_values.items():
-            setattr(x, key, value)
             setattr(res, key, value)
         return res
 
