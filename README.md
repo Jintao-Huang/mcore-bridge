@@ -7,11 +7,11 @@
 <p> -->
 
 <p align="center">
-    <b>Providing Megatron-Core model definitions for state-of-the-art large language models</b>
+    <b>Providing Megatron-Core model definitions for state-of-the-art large models</b>
 </p>
 
 <p align="center">
-<a href="https://modelscope.cn/home">ModelScope Community Website</a>
+<a href="https://modelscope.cn">ModelScope</a>
 <br>
         <a href="README_zh.md">中文</a> &nbsp ｜ &nbsp English &nbsp
 </p>
@@ -54,7 +54,7 @@ You can contact us and communicate with us by adding our group:
 ## 📝 Introduction
 
 ## 🎉 News
-- 🎉 2026.03.30: MCore-Bridge is released! Providing Megatron-Core model definitions for state-of-the-art large language models and making Megatron training as simple as Transformers.
+- 🎉 2026.03.30: MCore-Bridge is released! Providing Megatron-Core model definitions for state-of-the-art large models and making Megatron training as simple as Transformers.
 
 ## 🛠️ Installation
 To install using pip:
