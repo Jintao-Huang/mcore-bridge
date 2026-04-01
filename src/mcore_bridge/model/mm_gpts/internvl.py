@@ -39,8 +39,9 @@ class InternvlBridge(GPTBridge):
             pass
         contexts = self._get_meta_model_context(model_cls)
         hf_config = self.config.hf_config
+        model_cls = get_class_from_dynamic_module('modeling_internvl_chat.InternVLChatModel', hf_config.name_or_path)
         with contexts:
-            model = AutoModelForCausalLM.from_pretrained(hf_config.name_or_path, trust_remote_code=True)
+            model = model_cls(hf_config)
         return model
 
 
