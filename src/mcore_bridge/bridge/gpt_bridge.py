@@ -5,11 +5,14 @@ import re
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from contextlib import contextmanager
 from megatron.core import mpu
 from packaging import version
 from peft import PeftModel
 from peft.utils import ModulesToSaveWrapper
 from tqdm import tqdm
+from transformers import PreTrainedModel
+from transformers.utils import ContextManagers
 from typing import Callable, List, Optional, Union
 
 from mcore_bridge.tuners import LoraParallelLinear
@@ -1743,6 +1746,43 @@ class GPTBridge:
             saver.add_tensor(k, v)
         saver.finalize()
         dist.barrier()  # Ensure all weights are saved completely
+
+    @contextmanager
+    def _patch_hf_initialize_weight(self):
+
+        _origin_initialize_weight = PreTrainedModel._initialize_weights
+
+        def _initialize_weight(self, *args, **kwargs):
+            return
+
+        PreTrainedModel._initialize_weights = _initialize_weight
+        try:
+            yield
+        finally:
+            PreTrainedModel._initialize_weights = _origin_initialize_weight
+
+    @contextmanager
+    def _patch_device_meta(self, model_cls):
+        __origin_init__ = model_cls.__init__
+
+        def __init__(self, *args, **kwargs):
+            with torch.device('meta'):
+                __origin_init__(self, *args, **kwargs)
+
+        model_cls.__init__ = __init__
+
+        try:
+            yield
+        finally:
+            model_cls.__init__ = __origin_init__
+
+    def _get_meta_model_context(self, ignore_init_model_cls=None):
+        ignore_init_model_cls = ignore_init_model_cls or []
+        if not isinstance(ignore_init_model_cls, list):
+            ignore_init_model_cls = [ignore_init_model_cls]
+        context_list = [self._patch_device_meta(model_cls) for model_cls in ignore_init_model_cls]
+        context_list.append(self._patch_hf_initialize_weight())
+        return ContextManagers(context_list)
 
 
 class MultimodalGPTBridge(GPTBridge):

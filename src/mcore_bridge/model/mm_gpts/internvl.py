@@ -1,7 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import torch
 from torch import nn
-from transformers import AutoModel, PretrainedConfig
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, PretrainedConfig
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from mcore_bridge.bridge import GPTBridge, MultimodalGPTBridge
@@ -18,6 +18,31 @@ class InternvlBridge(GPTBridge):
     hf_lm_head_key = 'language_model.lm_head.weight'
     hf_score_key = 'language_model.score.weight'
 
+    def get_hf_meta_model(self):
+        model_cls = []
+        from transformers.models.qwen2 import Qwen2ForCausalLM
+        model_cls.append(Qwen2ForCausalLM)
+        try:
+            from transformers.models import Qwen3ForCausalLM
+            model_cls.append(Qwen3ForCausalLM)
+        except ImportError:
+            pass
+        try:
+            from transformers.models import Qwen3MoeForCausalLM
+            model_cls.append(Qwen3MoeForCausalLM)
+        except ImportError:
+            pass
+        try:
+            from transformers import GptOssForCausalLM
+            model_cls.append(GptOssForCausalLM)
+        except ImportError:
+            pass
+        contexts = self._get_meta_model_context(model_cls)
+        hf_config = self.config.hf_config
+        with contexts:
+            model = AutoModelForCausalLM.from_pretrained(hf_config.name_or_path, trust_remote_code=True)
+        return model
+
 
 class InternvlVit(HuggingFaceVit):
     module_mapping = {'vision_model': 'vision_model', 'mlp1': 'mlp1'}
@@ -33,7 +58,6 @@ class InternvlVit(HuggingFaceVit):
         self.hf_config.vision_config.use_flash_attn = use_flash_attn
 
     def prepare_model(self, hf_config: PretrainedConfig):
-        from transformers import AutoProcessor
         llm_model_type = self.config.llm_model_type
         if llm_model_type not in ['qwen2', 'qwen3', 'qwen3_moe', 'gpt_oss']:
             raise ValueError(f'{llm_model_type} is not supported for internvl_chat model')
@@ -52,7 +76,7 @@ class InternvlVit(HuggingFaceVit):
         self.select_layer = hf_config.select_layer
         self.downsample_ratio = hf_config.downsample_ratio
         self.ps_version = hf_config.ps_version
-        self.processor = AutoProcessor.from_pretrained(hf_config.name_or_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(hf_config.name_or_path, trust_remote_code=True)
 
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
         input_ids = kwargs['input_ids']
