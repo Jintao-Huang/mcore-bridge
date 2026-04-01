@@ -1751,3 +1751,4 @@ class MultimodalGPTBridge(GPTBridge):
     hf_layers_prefix = 'model.language_model.layers'
     hf_embed_key = 'model.language_model.embed_tokens.weight'
     hf_final_layernorm_key = 'model.language_model.norm.weight'
+
