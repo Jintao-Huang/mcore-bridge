@@ -5,7 +5,6 @@ import re
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import transformers
 from megatron.core import mpu
 from packaging import version
 from peft import PeftModel
@@ -66,7 +65,6 @@ class GPTBridge:
         self.pp_group = mpu.get_pipeline_model_parallel_group()
         self.etp_group = mpu.get_expert_tensor_parallel_group()
         self.ep_group = mpu.get_expert_model_parallel_group()
-        self.is_transformers_5 = version.parse(transformers.__version__) >= version.parse('5.0.0.dev')
         self.tp_rank = mpu.get_tensor_model_parallel_rank()
         self.pp_rank = mpu.get_pipeline_model_parallel_rank()
         self.etp_rank = mpu.get_expert_tensor_parallel_rank()
