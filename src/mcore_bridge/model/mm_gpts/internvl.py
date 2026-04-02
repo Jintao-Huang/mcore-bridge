@@ -1,4 +1,5 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import importlib
 import torch
 from torch import nn
 from transformers import AutoModel, AutoTokenizer, PretrainedConfig
@@ -20,23 +21,13 @@ class InternvlBridge(GPTBridge):
 
     def get_hf_meta_model(self):
         model_cls = []
-        from transformers.models.qwen2 import Qwen2ForCausalLM
-        model_cls.append(Qwen2ForCausalLM)
-        try:
-            from transformers.models import Qwen3ForCausalLM
-            model_cls.append(Qwen3ForCausalLM)
-        except ImportError:
-            pass
-        try:
-            from transformers.models import Qwen3MoeForCausalLM
-            model_cls.append(Qwen3MoeForCausalLM)
-        except ImportError:
-            pass
-        try:
-            from transformers import GptOssForCausalLM
-            model_cls.append(GptOssForCausalLM)
-        except ImportError:
-            pass
+        class_names = ['Qwen2ForCausalLM', 'Qwen3ForCausalLM', 'Qwen3MoeForCausalLM', 'GptOssForCausalLM']
+        module = importlib.import_module('transformers')
+        for cls_name in class_names:
+            try:
+                model_cls.append(getattr(module, cls_name))
+            except (ImportError, AttributeError):
+                pass
         contexts = self._get_meta_model_context(model_cls)
         hf_config = self.config.hf_config
         model_cls = get_class_from_dynamic_module('modeling_internvl_chat.InternVLChatModel', hf_config.name_or_path)
