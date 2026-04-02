@@ -405,6 +405,7 @@ class GPTModel(McoreGPTModel):
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
                 embedding=self.embedding,
+                decoder_input=decoder_input,
                 **(extra_block_kwargs or {}),
             )
             hidden_states_list = torch.chunk(hidden_states, 1 + self.config.mtp_num_layers, dim=0)

@@ -21,7 +21,7 @@ from megatron.core.utils import deprecate_inference_params
 from packaging import version
 from peft.tuners.tuners_utils import BaseTuner
 from torch import nn
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Callable
 
 from mcore_bridge.utils import get_logger, is_flash_attn_3_available
 
@@ -424,6 +424,8 @@ def _patch_mtp():
             position_ids=position_ids,
             embedding=embedding,
             hidden_states=hidden_states,
+            packed_seq_params=packed_seq_params,
+            decoder_input=decoder_input,
         )
         assert not self.transformer_layer.self_attention.config.apply_rope_fusion
         packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
@@ -469,6 +471,41 @@ def _patch_mtp():
         return hidden_states, input_ids, position_ids
 
     MultiTokenPredictionLayer.forward = forward
+
+
+    def _get_embeddings(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        embedding: Callable,
+        hidden_states: torch.Tensor,
+        packed_seq_params: Optional[PackedSeqParams] = None,
+        decoder_input: Optional[torch.Tensor] = None,
+    ):
+        # Calc logits for the current Multi-Token Prediction (MTP) layers.
+        input_ids, _ = roll_tensor(
+            input_ids,
+            shifts=-1,
+            dims=-1,
+            cp_group=self.cp_group,
+            packed_seq_params=packed_seq_params,
+        )
+        position_ids, _ = roll_tensor(
+            position_ids,
+            shifts=-1,
+            dims=-1,
+            cp_group=self.cp_group,
+            packed_seq_params=packed_seq_params,
+        )
+        # embedding
+        decoder_input = embedding(input_ids=input_ids, position_ids=position_ids)
+
+        hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
+
+        return input_ids, position_ids, decoder_input, hidden_states
+
+
+    MultiTokenPredictionLayer._get_embeddings = _get_embeddings
 
 
 def _patch_peft_ModulesToSaveWrapper():
