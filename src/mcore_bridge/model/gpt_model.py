@@ -322,6 +322,11 @@ class GPTModel(McoreGPTModel):
             assert position_ids.shape[0] == 1, f'position_ids.shape: {position_ids.shape}'
             decoder_rotary_pos_emb = rotary_pos_emb[position_ids[0]]
 
+        mtp_decoder_input = decoder_input
+        if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:
+            input_tensor = self.get_input_tensor()
+            input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
+            self.set_input_tensor(input_tensor)
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
@@ -346,7 +351,7 @@ class GPTModel(McoreGPTModel):
             rotary_pos_cos=rotary_pos_cos,
             rotary_pos_sin=rotary_pos_sin,
             loss_mask=loss_mask,
-            decoder_input=decoder_input,
+            decoder_input=mtp_decoder_input,
             attention_mask=attention_mask,
             inference_params=inference_params,
             packed_seq_params=packed_seq_params,
@@ -381,7 +386,10 @@ class GPTModel(McoreGPTModel):
         the output layer, and computes language model loss when labels are provided.
         """
         if not self.post_process:
-            return hidden_states
+            if self.config.is_multimodal and self.config.mtp_num_layers:
+                return torch.concat([hidden_states, decoder_input], dim=0)
+            else:
+                return hidden_states
         labels = labels if self.config.task_type == 'causal_lm' else None
         in_inference_mode = inference_context is not None and not self.training
         if in_inference_mode:
@@ -395,6 +403,10 @@ class GPTModel(McoreGPTModel):
             input_ids = split_cp_inputs(input_ids, getattr(packed_seq_params, 'cu_seqlens_q', None), 1)
 
         if self.mtp_process:
+            if self.config.is_multimodal:
+                embedding_ = (self.embedding, decoder_input)
+            else:
+                embedding_ = self.embedding
             hidden_states = self.mtp(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -406,7 +418,7 @@ class GPTModel(McoreGPTModel):
                 rotary_pos_sin=rotary_pos_sin,
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
-                embedding=(self.embedding, decoder_input),
+                embedding=embedding_,
                 **(extra_block_kwargs or {}),
             )
             mtp_labels = labels.clone()
