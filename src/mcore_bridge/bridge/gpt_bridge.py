@@ -1243,10 +1243,10 @@ class GPTBridge:
         value_dim = config.linear_value_head_dim * config.linear_num_value_heads // num_key_heads
         if to_mcore:
             if isinstance(mg_attn.in_proj_qkvz, LoraParallelLinear):
-                lora_A = hf_state_dict['in_proj_qkvz.lora_A.weight'].load()
+                lora_A = hf_state_dict['in_proj_qkv.lora_A.weight'].load()
                 assert (lora_A == hf_state_dict['in_proj_z.lora_A.weight'].load()).all(), \
                        'Need to ensure QKVZ\'s lora_A are consistent'
-                qkv_lora_B = hf_state_dict['in_proj_qkvz.lora_B.weight'].load()
+                qkv_lora_B = hf_state_dict['in_proj_qkv.lora_B.weight'].load()
                 q_lora_B, k_lora_B, v_lora_B = torch.split(
                     qkv_lora_B, [key_dim * num_key_heads, key_dim * num_key_heads, value_dim * num_key_heads], dim=0)
                 lora_B = torch.cat([
