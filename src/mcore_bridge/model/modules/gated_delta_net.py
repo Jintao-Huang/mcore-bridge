@@ -107,7 +107,7 @@ class GatedDeltaNet(_GatedDeltaNet):
             tp_comm_buffer_name='fc1_qkvz',
             tp_group=self.pg_collection.tp,
         )
-        self.in_proj_qkvz = build_module(
+        self.in_proj_ba = build_module(
             submodules.in_proj,
             self.hidden_size,
             self.in_proj_ba_dim,
