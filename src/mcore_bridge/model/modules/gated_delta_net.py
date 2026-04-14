@@ -104,7 +104,7 @@ class GatedDeltaNet(_GatedDeltaNet):
             bias=self.bias,
             skip_bias_add=False,
             is_expert=False,
-            tp_comm_buffer_name='fc1_qkvz',
+            tp_comm_buffer_name='fc1',
             tp_group=self.pg_collection.tp,
         )
         self.in_proj_ba = build_module(
