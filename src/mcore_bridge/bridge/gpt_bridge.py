@@ -1268,7 +1268,7 @@ class GPTBridge:
                       for key in ['in_proj_z', 'in_proj_b', 'in_proj_a']),
                 ],
                                            dim=1).reshape((-1, config.hidden_size))
-                self._set_weight(mg_attn.in_proj.weight, in_proj_weight, 'in_proj.weight', hf_scale_inv=in_scale_inv)
+                self._set_weight(mg_attn.in_proj.weight, in_proj_weight, 'in_proj.weight')
         else:
             qkv_dim = key_dim * 2 + value_dim
             z_dim = value_dim
@@ -1300,8 +1300,8 @@ class GPTBridge:
                         -1, lora_B.shape[-1]).clone()
                     hf_state_dict['in_proj_a.lora_B.weight'] = lora_B[:, -a_dim:].reshape(-1, lora_B.shape[-1]).clone()
             elif not self._peft_format:
-                in_proj_weight, scale_inv = self._get_weight(None if mg_attn is None else mg_attn.in_proj.weight.data,
-                                                             'in_proj.weight')
+                in_proj_weight, _ = self._get_weight(None if mg_attn is None else mg_attn.in_proj.weight.data,
+                                                     'in_proj.weight')
                 if in_proj_weight is not None:
                     in_proj_weight = in_proj_weight.reshape(num_key_heads, -1, config.hidden_size)
                     q = in_proj_weight[:, :key_dim].reshape(-1, config.hidden_size)
