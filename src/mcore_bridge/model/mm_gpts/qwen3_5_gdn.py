@@ -1,4 +1,5 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TENorm
 from megatron.core.transformer.attention import SelfAttention
 from typing import Optional
 
@@ -20,8 +21,7 @@ class Qwen3_5Bridge(MultimodalGPTBridge):
         if is_linear_attention:
             hf_state_dict.update(
                 self._set_linear_attn_state(mg_attn, hf_state_dict, 'linear_attn.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'self_attention.in_proj.layer_norm_weight', hf_state_dict,
-                                 'input_layernorm.weight', to_mcore)
+            self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, 'input_layernorm.weight', to_mcore)
         else:
             hf_state_dict.update(self._set_attn_state(mg_attn, hf_state_dict, 'self_attn.', layer_idx, to_mcore))
             self._set_state_dict(mg_layer, 'self_attention.linear_qkv.layer_norm_weight', hf_state_dict,
@@ -43,7 +43,9 @@ class Qwen3_5Loader(ModelLoader):
             if issubclass(attn_module, SelfAttention):
                 layer_spec.submodules.self_attention.module = GatedSelfAttention
             else:
+                layer_spec.submodules.input_layernorm = TENorm
                 layer_spec.submodules.self_attention.module = GatedDeltaNet
+                layer_spec.submodules.self_attention.submodules.in_proj = TEColumnParallelLinear
         return layer_specs
 
     def build_model(

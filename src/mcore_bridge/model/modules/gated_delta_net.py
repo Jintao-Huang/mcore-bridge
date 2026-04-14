@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer import TransformerConfig
+from megatron.core.transformer.identity_op import IdentityOp
+from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
 from typing import List, Optional
 
@@ -85,7 +87,39 @@ def get_parameter_local_cp(
 class GatedDeltaNet(_GatedDeltaNet):
 
     def __init__(self, config: TransformerConfig, submodules: 'GatedDeltaNetSubmodules', *args, **kwargs):
+        in_proj = submodules.in_proj
+        submodules.in_proj = IdentityOp
         super().__init__(config, submodules, *args, **kwargs)
+        submodules.in_proj = in_proj
+        self.in_proj_qkvz_dim = self.qk_dim * 2 + self.v_dim * 2
+        self.in_proj_ba_dim = self.num_value_heads * 2
+        del self.in_proj
+        self.in_proj_qkvz = build_module(
+            submodules.in_proj,
+            self.hidden_size,
+            self.in_proj_qkvz_dim,
+            config=self.config,
+            init_method=self.config.init_method,
+            gather_output=False,
+            bias=self.bias,
+            skip_bias_add=False,
+            is_expert=False,
+            tp_comm_buffer_name='fc1_qkvz',
+            tp_group=self.pg_collection.tp,
+        )
+        self.in_proj_qkvz = build_module(
+            submodules.in_proj,
+            self.hidden_size,
+            self.in_proj_ba_dim,
+            config=self.config,
+            init_method=self.config.init_method,
+            gather_output=False,
+            bias=self.bias,
+            skip_bias_add=False,
+            is_expert=False,
+            tp_comm_buffer_name='fc1_ba',
+            tp_group=self.pg_collection.tp,
+        )
 
     def forward(
         self,
@@ -137,7 +171,9 @@ class GatedDeltaNet(_GatedDeltaNet):
         cu_seqlens = None if packed_seq_params is None else packed_seq_params.cu_seqlens_q
         # Input projection
         nvtx_range_push(suffix='in_proj')
-        qkvzba, _ = self.in_proj(hidden_states)
+        qkvz, _ = self.in_proj_qkvz(hidden_states)
+        ba, _ = self.in_proj_ba(hidden_states)
+        qkvzba = torch.concat([qkvz, ba], dim=0)
         nvtx_range_pop(suffix='in_proj')
 
         if cp_size > 1:
