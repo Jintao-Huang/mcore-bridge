@@ -178,7 +178,13 @@ class GatedDeltaNet(_GatedDeltaNet):
         # Input projection
         nvtx_range_push(suffix='in_proj')
         qkvz, _ = self.in_proj_qkvz(hidden_states)
-        ba, _ = self.in_proj_ba(hidden_states)
+        if self.config.fp8_param:
+            fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
+        else:
+            fp8_context = nullcontext()
+        fp8_context = transformer_engine.pytorch.fp8_autocast(enabled=False)
+        with fp8_context:
+            ba, _ = self.in_proj_ba(hidden_states)
         num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
         qkvz = qkvz.view(qkvz.shape[:-1] + (num_key_heads_per_device, qkvz.shape[-1] // num_key_heads_per_device))
         ba = ba.view(ba.shape[:-1] + (num_key_heads_per_device, ba.shape[-1] // num_key_heads_per_device))
