@@ -1,10 +1,16 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import torch
 import torch.nn.functional as F
+import transformer_engine
+from contextlib import nullcontext
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.transformer.identity_op import IdentityOp
+from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
 from typing import List, Optional
+
+from mcore_bridge.config import ModelConfig
 
 try:
     from fla.modules.convolution import causal_conv1d
@@ -17,7 +23,7 @@ except ImportError:
 
 try:
     from megatron.core.ssm.gated_delta_net import GatedDeltaNet as _GatedDeltaNet
-    from megatron.core.ssm.gated_delta_net import torch_chunk_gated_delta_rule
+    from megatron.core.ssm.gated_delta_net import GatedDeltaNetSubmodules, torch_chunk_gated_delta_rule
 except ImportError:
     _GatedDeltaNet = object
 
@@ -83,6 +89,49 @@ def get_parameter_local_cp(
 
 class GatedDeltaNet(_GatedDeltaNet):
 
+    def __init__(self, config: ModelConfig, submodules: 'GatedDeltaNetSubmodules', *args, **kwargs):
+        if config.linear_decoupled_in_proj:
+            in_proj = submodules.in_proj
+            submodules.in_proj = IdentityOp
+        super().__init__(config, submodules, *args, **kwargs)
+        if not config.linear_decoupled_in_proj:
+            return
+        submodules.in_proj = in_proj
+        self.in_proj_qkvz_dim = self.qk_dim * 2 + self.v_dim * 2
+        self.in_proj_ba_dim = self.num_value_heads * 2
+        del self.in_proj
+        self.in_proj_qkvz = build_module(
+            submodules.in_proj,
+            self.hidden_size,
+            self.in_proj_qkvz_dim,
+            config=self.config,
+            init_method=self.config.init_method,
+            gather_output=False,
+            bias=self.bias,
+            skip_bias_add=False,
+            is_expert=False,
+            tp_comm_buffer_name='fc1',
+            tp_group=self.pg_collection.tp,
+        )
+        if config.fp8_param:
+            fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
+        else:
+            fp8_context = nullcontext()
+        with fp8_context:
+            self.in_proj_ba = build_module(
+                submodules.in_proj,
+                self.hidden_size,
+                self.in_proj_ba_dim,
+                config=self.config,
+                init_method=self.config.init_method,
+                gather_output=False,
+                bias=self.bias,
+                skip_bias_add=False,
+                is_expert=False,
+                tp_comm_buffer_name='fc1_ba',
+                tp_group=self.pg_collection.tp,
+            )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -132,8 +181,21 @@ class GatedDeltaNet(_GatedDeltaNet):
 
         cu_seqlens = None if packed_seq_params is None else packed_seq_params.cu_seqlens_q
         # Input projection
+        num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
         nvtx_range_push(suffix='in_proj')
-        qkvzba, _ = self.in_proj(hidden_states)
+        if self.config.linear_decoupled_in_proj:
+            qkvz, _ = self.in_proj_qkvz(hidden_states)
+            if self.config.fp8_param:
+                fp8_context = transformer_engine.pytorch.fp8_autocast(enabled=False)
+            else:
+                fp8_context = nullcontext()
+            with fp8_context:
+                ba, _ = self.in_proj_ba(hidden_states)
+            qkvz = qkvz.view(qkvz.shape[:-1] + (num_key_heads_per_device, qkvz.shape[-1] // num_key_heads_per_device))
+            ba = ba.view(ba.shape[:-1] + (num_key_heads_per_device, ba.shape[-1] // num_key_heads_per_device))
+            qkvzba = torch.concat([qkvz, ba], dim=-1).view(*qkvz.shape[:2], -1)
+        else:
+            qkvzba, _ = self.in_proj(hidden_states)
         nvtx_range_pop(suffix='in_proj')
 
         if cp_size > 1:
@@ -158,15 +220,11 @@ class GatedDeltaNet(_GatedDeltaNet):
                     head_dim=-1,
                     cp_group=self.pg_collection.cp,
                 )
-
         # Transpose: s b x --> b s x
         # From sbhd to bshd format
-        qkvzba = qkvzba.transpose(0, 1)
-
-        # Split, reorder, and reshape the tensor into q, k, v, gate, beta, alpha
-        num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
         qkvzba = qkvzba.view(qkvzba.shape[:-1]
                              + (num_key_heads_per_device, qkvzba.shape[-1] // num_key_heads_per_device))
+        qkvzba = qkvzba.transpose(0, 1)
         qkv, gate, beta, alpha = torch.split(
             qkvzba,
             [
