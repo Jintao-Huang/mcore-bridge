@@ -1234,11 +1234,7 @@ class GPTBridge:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
-    def _set_linear_decoupled_in_proj(self, mg_attn, hf_state_dict, hf_prefix: str, to_mcore: bool):
-        if to_mcore:
-            hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
-        else:
-            hf_state_dict = {}
+    def _set_linear_decoupled_in_proj(self, mg_attn, hf_state_dict, to_mcore: bool):
         config = self.config
         num_key_heads = config.linear_num_key_heads
         key_dim = config.linear_key_head_dim
@@ -1382,17 +1378,9 @@ class GPTBridge:
                                                                                            config.hidden_size).clone()
                     hf_state_dict['in_proj_a.weight'] = in_proj_weight[:, -a_dim:].reshape(-1,
                                                                                            config.hidden_size).clone()
-        if to_mcore:
-            hf_state_dict = {}
-        else:
-            hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
-    def _set_linear_in_proj(self, mg_attn, hf_state_dict, hf_prefix: str, to_mcore: bool):
-        if to_mcore:
-            hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
-        else:
-            hf_state_dict = {}
+    def _set_linear_in_proj(self, mg_attn, hf_state_dict, to_mcore: bool):
         config = self.config
         num_key_heads = config.linear_num_key_heads
         key_dim = config.linear_key_head_dim
@@ -1471,10 +1459,6 @@ class GPTBridge:
                         -1, config.hidden_size).clone()
                     hf_state_dict['in_proj_a.weight'] = in_proj_weight[:, -a_dim:].reshape(-1,
                                                                                            config.hidden_size).clone()
-        if to_mcore:
-            hf_state_dict = {}
-        else:
-            hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
     def _set_linear_attn_state(self, mg_attn, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
@@ -1487,9 +1471,9 @@ class GPTBridge:
         key_dim = config.linear_key_head_dim
         value_dim = config.linear_value_head_dim * config.linear_num_value_heads // num_key_heads
         if config.linear_decoupled_in_proj:
-            hf_state_dict.update(self._set_linear_decoupled_in_proj(mg_attn, hf_state_dict, hf_prefix, to_mcore))
+            hf_state_dict.update(self._set_linear_decoupled_in_proj(mg_attn, hf_state_dict, to_mcore))
         else:
-            hf_state_dict.update(self._set_linear_in_proj(mg_attn, hf_state_dict, hf_prefix, to_mcore))
+            hf_state_dict.update(self._set_linear_in_proj(mg_attn, hf_state_dict, to_mcore))
         if not self._peft_format:
             if to_mcore:
                 conv1d = hf_state_dict['conv1d.weight'].load()

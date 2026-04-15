@@ -181,6 +181,7 @@ class GatedDeltaNet(_GatedDeltaNet):
 
         cu_seqlens = None if packed_seq_params is None else packed_seq_params.cu_seqlens_q
         # Input projection
+        num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
         nvtx_range_push(suffix='in_proj')
         if self.config.linear_decoupled_in_proj:
             qkvz, _ = self.in_proj_qkvz(hidden_states)
@@ -190,7 +191,6 @@ class GatedDeltaNet(_GatedDeltaNet):
                 fp8_context = nullcontext()
             with fp8_context:
                 ba, _ = self.in_proj_ba(hidden_states)
-            num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
             qkvz = qkvz.view(qkvz.shape[:-1] + (num_key_heads_per_device, qkvz.shape[-1] // num_key_heads_per_device))
             ba = ba.view(ba.shape[:-1] + (num_key_heads_per_device, ba.shape[-1] // num_key_heads_per_device))
             qkvzba = torch.concat([qkvz, ba], dim=-1).view(*qkvz.shape[:2], -1)
