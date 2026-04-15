@@ -15,6 +15,7 @@ from transformers import PreTrainedModel
 from transformers.utils import ContextManagers
 from typing import Callable, List, Optional, Union
 
+from mcore_bridge.config import ModelConfig
 from mcore_bridge.tuners import LoraParallelLinear
 from mcore_bridge.utils import (MxFp4Dequantizer, SafetensorLazyLoader, StreamingSafetensorSaver, deep_getattr,
                                 gc_collect, get_logger, is_master, unwrap_model)
@@ -45,7 +46,7 @@ class GPTBridge:
     hf_shared_expert_key = None
     hf_expert_bias_key = 'gate.e_score_correction_bias'
 
-    def __init__(self, config):
+    def __init__(self, config: ModelConfig):
         self.config = config
         self._disable_tqdm = False
         self._target_device = None
@@ -114,6 +115,7 @@ class GPTBridge:
         dim0_keys = {
             'word_embeddings',
             'linear_qkv',
+            'in_proj',
             'in_proj_qkvz',
             'in_proj_ba',
             'conv1d',
@@ -1232,7 +1234,7 @@ class GPTBridge:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
-    def _set_linear_attn_state(self, mg_attn, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
+    def _set_linear_decoupled_in_proj(self, mg_attn, hf_state_dict, hf_prefix: str, to_mcore: bool):
         if to_mcore:
             hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
         else:
@@ -1380,6 +1382,114 @@ class GPTBridge:
                                                                                            config.hidden_size).clone()
                     hf_state_dict['in_proj_a.weight'] = in_proj_weight[:, -a_dim:].reshape(-1,
                                                                                            config.hidden_size).clone()
+        if to_mcore:
+            hf_state_dict = {}
+        else:
+            hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
+        return hf_state_dict
+
+    def _set_linear_in_proj(self, mg_attn, hf_state_dict, hf_prefix: str, to_mcore: bool):
+        if to_mcore:
+            hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
+        else:
+            hf_state_dict = {}
+        config = self.config
+        num_key_heads = config.linear_num_key_heads
+        key_dim = config.linear_key_head_dim
+        value_dim = config.linear_value_head_dim * config.linear_num_value_heads // num_key_heads
+        if to_mcore:
+            if isinstance(mg_attn.in_proj, LoraParallelLinear):
+                lora_A = hf_state_dict['in_proj_qkv.lora_A.weight'].load()
+                assert (lora_A == hf_state_dict['in_proj_z.lora_A.weight'].load()).all() and \
+                       (lora_A == hf_state_dict['in_proj_b.lora_A.weight'].load()).all() and \
+                       (lora_A == hf_state_dict['in_proj_a.lora_A.weight'].load()).all(), \
+                       'Need to ensure QKVZBA\'s lora_A are consistent'
+                qkv_lora_B = hf_state_dict['in_proj_qkv.lora_B.weight'].load()
+                q_lora_B, k_lora_B, v_lora_B = torch.split(
+                    qkv_lora_B, [key_dim * num_key_heads, key_dim * num_key_heads, value_dim * num_key_heads], dim=0)
+                lora_B = torch.cat([
+                    *(x.reshape(num_key_heads, -1, qkv_lora_B.shape[-1]) for x in [q_lora_B, k_lora_B, v_lora_B]),
+                    *(hf_state_dict[f'{key}.lora_B.weight'].load().reshape(num_key_heads, -1, qkv_lora_B.shape[-1])
+                      for key in ['in_proj_z', 'in_proj_b', 'in_proj_a'])
+                ],
+                                   dim=1).reshape(-1, qkv_lora_B.shape[-1])
+                self._set_weight(mg_attn.in_proj.lora_A[self._adapter_name].weight, lora_A, 'in_proj.lora_A.weight')
+                self._set_weight(mg_attn.in_proj.lora_B[self._adapter_name].weight, lora_B, 'in_proj.lora_B.weight')
+            elif not self._peft_format:
+                qkv = hf_state_dict['in_proj_qkv.weight'].load()
+                q, k, v = torch.split(
+                    qkv, [key_dim * num_key_heads, key_dim * num_key_heads, value_dim * num_key_heads], dim=0)
+                in_proj_weight = torch.cat([
+                    *(x.reshape(num_key_heads, -1, config.hidden_size) for x in [q, k, v]),
+                    *(hf_state_dict[f'{key}.weight'].load().reshape(num_key_heads, -1, config.hidden_size)
+                      for key in ['in_proj_z', 'in_proj_b', 'in_proj_a']),
+                ],
+                                           dim=1).reshape((-1, config.hidden_size))
+                self._set_weight(mg_attn.in_proj.weight, in_proj_weight, 'in_proj.weight')
+        else:
+            qkv_dim = key_dim * 2 + value_dim
+            z_dim = value_dim
+            a_dim = config.linear_num_value_heads // num_key_heads
+            is_lora = False if mg_attn is None else isinstance(mg_attn.in_proj,
+                                                               LoraParallelLinear) and self._peft_format
+            is_lora = torch.tensor([is_lora], dtype=torch.bool, device='cuda')
+            if self.pp_size > 1:
+                dist.all_reduce(is_lora, group=self.pp_group)
+            if is_lora:
+                lora_A, _ = self._get_weight(
+                    None if mg_attn is None else mg_attn.in_proj.lora_A[self._adapter_name].weight.data,
+                    f'in_proj.lora_A.{self._adapter_name}.weight')
+                lora_B, _ = self._get_weight(
+                    None if mg_attn is None else mg_attn.in_proj.lora_B[self._adapter_name].weight.data,
+                    f'in_proj.lora_B.{self._adapter_name}.weight')
+                if lora_A is not None:
+                    lora_B = lora_B.reshape(num_key_heads, -1, lora_B.shape[-1])
+                    self._peft_target_modules.update({'in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a'})
+                    for key in ['in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a']:
+                        hf_state_dict[f'{key}.lora_A.weight'] = lora_A.clone()
+                    q_lora_B = lora_B[:, :key_dim].reshape(-1, lora_B.shape[-1])
+                    k_lora_B = lora_B[:, key_dim:2 * key_dim].reshape(-1, lora_B.shape[-1])
+                    v_lora_B = lora_B[:, 2 * key_dim:qkv_dim].reshape(-1, lora_B.shape[-1])
+                    hf_state_dict['in_proj_qkv.lora_B.weight'] = torch.concat([q_lora_B, k_lora_B, v_lora_B], dim=0)
+                    hf_state_dict['in_proj_z.lora_B.weight'] = lora_B[:, qkv_dim:qkv_dim + z_dim].reshape(
+                        -1, lora_B.shape[-1]).clone()
+                    hf_state_dict['in_proj_b.lora_B.weight'] = lora_B[:, qkv_dim + z_dim:-a_dim].reshape(
+                        -1, lora_B.shape[-1]).clone()
+                    hf_state_dict['in_proj_a.lora_B.weight'] = lora_B[:, -a_dim:].reshape(-1, lora_B.shape[-1]).clone()
+            elif not self._peft_format:
+                in_proj_weight, _ = self._get_weight(None if mg_attn is None else mg_attn.in_proj.weight.data,
+                                                     'in_proj.weight')
+                if in_proj_weight is not None:
+                    in_proj_weight = in_proj_weight.reshape(num_key_heads, -1, config.hidden_size)
+                    q = in_proj_weight[:, :key_dim].reshape(-1, config.hidden_size)
+                    k = in_proj_weight[:, key_dim:2 * key_dim].reshape(-1, config.hidden_size)
+                    v = in_proj_weight[:, 2 * key_dim:qkv_dim].reshape(-1, config.hidden_size)
+                    hf_state_dict['in_proj_qkv.weight'] = torch.concat([q, k, v], dim=0)
+                    hf_state_dict['in_proj_z.weight'] = in_proj_weight[:, qkv_dim:(qkv_dim + z_dim)].reshape(
+                        -1, config.hidden_size).clone()
+                    hf_state_dict['in_proj_b.weight'] = in_proj_weight[:, (qkv_dim + z_dim):-a_dim].reshape(
+                        -1, config.hidden_size).clone()
+                    hf_state_dict['in_proj_a.weight'] = in_proj_weight[:, -a_dim:].reshape(-1,
+                                                                                           config.hidden_size).clone()
+        if to_mcore:
+            hf_state_dict = {}
+        else:
+            hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
+        return hf_state_dict
+
+    def _set_linear_attn_state(self, mg_attn, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
+        if to_mcore:
+            hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
+        else:
+            hf_state_dict = {}
+        config = self.config
+        num_key_heads = config.linear_num_key_heads
+        key_dim = config.linear_key_head_dim
+        value_dim = config.linear_value_head_dim * config.linear_num_value_heads // num_key_heads
+        if config.linear_decoupled_in_proj:
+            hf_state_dict.update(self._set_linear_decoupled_in_proj(mg_attn, hf_state_dict, hf_prefix, to_mcore))
+        else:
+            hf_state_dict.update(self._set_linear_in_proj(mg_attn, hf_state_dict, hf_prefix, to_mcore))
         if not self._peft_format:
             if to_mcore:
                 conv1d = hf_state_dict['conv1d.weight'].load()

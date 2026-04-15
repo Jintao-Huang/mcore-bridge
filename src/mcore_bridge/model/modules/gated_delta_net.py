@@ -5,11 +5,12 @@ import transformer_engine
 from contextlib import nullcontext
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.transformer import TransformerConfig
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
 from typing import List, Optional
+
+from mcore_bridge.config import ModelConfig
 
 try:
     from fla.modules.convolution import causal_conv1d
@@ -88,10 +89,13 @@ def get_parameter_local_cp(
 
 class GatedDeltaNet(_GatedDeltaNet):
 
-    def __init__(self, config: TransformerConfig, submodules: 'GatedDeltaNetSubmodules', *args, **kwargs):
-        in_proj = submodules.in_proj
-        submodules.in_proj = IdentityOp
+    def __init__(self, config: ModelConfig, submodules: 'GatedDeltaNetSubmodules', *args, **kwargs):
+        if config.linear_decoupled_in_proj:
+            in_proj = submodules.in_proj
+            submodules.in_proj = IdentityOp
         super().__init__(config, submodules, *args, **kwargs)
+        if not config.linear_decoupled_in_proj:
+            return
         submodules.in_proj = in_proj
         self.in_proj_qkvz_dim = self.qk_dim * 2 + self.v_dim * 2
         self.in_proj_ba_dim = self.num_value_heads * 2
@@ -178,18 +182,20 @@ class GatedDeltaNet(_GatedDeltaNet):
         cu_seqlens = None if packed_seq_params is None else packed_seq_params.cu_seqlens_q
         # Input projection
         nvtx_range_push(suffix='in_proj')
-        qkvz, _ = self.in_proj_qkvz(hidden_states)
-        if self.config.fp8_param:
-            fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
+        if self.config.linear_decoupled_in_proj:
+            qkvz, _ = self.in_proj_qkvz(hidden_states)
+            if self.config.fp8_param:
+                fp8_context = transformer_engine.pytorch.fp8_autocast(enabled=False)
+            else:
+                fp8_context = nullcontext()
+            with fp8_context:
+                ba, _ = self.in_proj_ba(hidden_states)
+            num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
+            qkvz = qkvz.view(qkvz.shape[:-1] + (num_key_heads_per_device, qkvz.shape[-1] // num_key_heads_per_device))
+            ba = ba.view(ba.shape[:-1] + (num_key_heads_per_device, ba.shape[-1] // num_key_heads_per_device))
+            qkvzba = torch.concat([qkvz, ba], dim=-1).view(*qkvz.shape[:2], -1)
         else:
-            fp8_context = nullcontext()
-        fp8_context = transformer_engine.pytorch.fp8_autocast(enabled=False)
-        with fp8_context:
-            ba, _ = self.in_proj_ba(hidden_states)
-        num_key_heads_per_device = self.num_key_heads // self.tp_size // cp_size
-        qkvz = qkvz.view(qkvz.shape[:-1] + (num_key_heads_per_device, qkvz.shape[-1] // num_key_heads_per_device))
-        ba = ba.view(ba.shape[:-1] + (num_key_heads_per_device, ba.shape[-1] // num_key_heads_per_device))
-        qkvzba = torch.concat([qkvz, ba], dim=-1).view(*qkvz.shape[:2], -1)
+            qkvzba, _ = self.in_proj(hidden_states)
         nvtx_range_pop(suffix='in_proj')
 
         if cp_size > 1:

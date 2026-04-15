@@ -193,6 +193,7 @@ class ModelConfig(TransformerConfig):
     linear_conv_kernel_dim: Optional[int] = None
     layernorm_zero_centered_gamma: bool = False
     attention_output_gate: bool = False
+    linear_decoupled_in_proj: bool = False
 
     # dsa
     experimental_attention_variant: Optional[Literal['gated_delta_net', 'dsa']] = None
