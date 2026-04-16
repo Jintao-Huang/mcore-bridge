@@ -276,6 +276,10 @@ class GPTBridge:
                                 or 'modules_to_save.' in k) and f'.{self._adapter_name}.' in k:
                             k = k.replace(f'.{self._adapter_name}.', '.')
                             new_state_dict[k] = v
+                            if 'lora_A.' in k or 'lora_B.' in k:
+                                self._peft_target_modules.add(k.rsplit('.lora_', 1)[0].rsplit('.')[-1])
+                            else:
+                                self._peft_modules_to_save.add(k.rsplit('.modules_to_save.', 1)[0].rsplit('.')[-1])
                     else:
                         if 'lora_A.' in k or 'lora_B.' in k or 'original_module.' in k:
                             continue
