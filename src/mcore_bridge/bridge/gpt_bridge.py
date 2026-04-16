@@ -278,12 +278,14 @@ class GPTBridge:
                             new_state_dict[k] = v
                             if 'lora_A.' in k or 'lora_B.' in k:
                                 parts = k.rsplit('.lora_', 1)
-                                name = parts[0].rsplit('.')[-1] if len(parts) > 1 else hf_prefix.rstrip('.').rsplit('.')[-1]
+                                name = parts[0].rsplit('.')[-1] if len(parts) > 1 else hf_prefix.rstrip('.').rsplit(
+                                    '.')[-1]
                                 if name:
                                     self._peft_target_modules.add(name)
                             else:
                                 parts = k.rsplit('.modules_to_save.', 1)
-                                name = parts[0].rsplit('.')[-1] if len(parts) > 1 else hf_prefix.rstrip('.').rsplit('.')[-1]
+                                name = parts[0].rsplit('.')[-1] if len(parts) > 1 else hf_prefix.rstrip('.').rsplit(
+                                    '.')[-1]
                                 if name:
                                     self._peft_modules_to_save.add(name)
                     else:
