@@ -60,28 +60,6 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         sequence_len_offset: torch.Tensor = None,
         embedding=None,
     ):
-        """
-        Execute the forward pass through the Multi-Token Prediction (MTP) layer.
-
-        Args:
-            input_ids (Tensor): Input token IDs .
-            position_ids (Tensor): Positional IDs of the input tokens.
-            hidden_states (Tensor): Hidden states tensor of shape [s, b, h] where s is the
-                sequence length, b is the batch size, and h is the hidden size.
-            attention_mask (Tensor): Boolean tensor of shape [1, 1, s, s] for masking
-                self-attention.
-            context (Tensor, optional): Context tensor for cross-attention, if applicable.
-            context_mask (Tensor, optional): Mask for cross-attention context, if applicable.
-            rotary_pos_emb (Tensor, optional): Rotary positional embeddings.
-            rotary_pos_cos (Tensor, optional): Cosine component of rotary positional embeddings.
-            rotary_pos_sin (Tensor, optional): Sine component of rotary positional embeddings.
-            sequence_len_offset (Tensor, optional): Offset for sequence length, if applicable.
-            embedding (Callable): The embedding module from gpt model to compute the decoder input.
-
-        Returns:
-            Union[Tensor, Tuple[Tensor, Tensor]]: The output hidden states tensor of shape
-            [s, b, h], and optionally the updated context tensor if cross-attention is used.
-        """
         assert context is None, 'multi token prediction + cross attention is not yet supported.'
         input_ids, position_ids, decoder_input, hidden_states = self._get_embeddings(
             input_ids=input_ids,
