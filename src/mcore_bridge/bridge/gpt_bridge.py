@@ -1746,10 +1746,9 @@ class GPTBridge:
         prog_bar.close()
 
     def _convert_mtp_extra(self, mtp_layer, hf_state_dict, to_mcore, origin_hf_state_dict):
-        keys = ['enorm.weight', 'hnorm.weight', 'eh_proj.weight']
-        for key in keys:
+        for key in ['enorm.weight', 'hnorm.weight', 'eh_proj.weight']:
             self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
-        self._fp8_skip_modules.update(keys)
+        self._fp8_skip_modules.update({'eh_proj'})
         self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, 'shared_head.norm.weight', to_mcore)
 
     def _convert_mtp_layer(self, lm_model, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
