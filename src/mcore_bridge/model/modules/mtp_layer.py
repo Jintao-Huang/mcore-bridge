@@ -25,7 +25,6 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         super().__init__(config, submodules, *args, **kwargs)
         if not config.fp8_param:
             return
-        del self.eh_proj
         submodules.eh_proj = eh_proj
         fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
         with fp8_context:
@@ -40,7 +39,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                 skip_bias_add=False,
                 is_expert=False,
                 tp_comm_buffer_name='mtp_eh_proj',
-                tp_group=self.tp_group,
+                tp_group=getattr(self, 'tp_group', None),
             )
 
     def forward(
