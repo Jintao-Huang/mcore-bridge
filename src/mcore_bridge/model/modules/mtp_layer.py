@@ -17,7 +17,7 @@ try:
     from megatron.core.typed_torch import apply_module
 except ImportError:
     apply_module = None
- 
+
 from mcore_bridge.config import ModelConfig
 
 
