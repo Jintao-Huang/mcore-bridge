@@ -732,7 +732,7 @@ def _patch_mtp():
         offset = get_mtp_layer_offset(self.config, self.vp_stage)
         hidden_states_list = list(torch.chunk(hidden_states, 1 + offset, dim=0))
         hidden_states = hidden_states_list[offset]
-        decoder_input = kwargs.pop('decoder_input', None)
+        mtp_decoder_input = decoder_input = kwargs.pop('decoder_input', None)
         for layer_number in range(len(self.layers)):
             (hidden_states, input_ids, position_ids, decoder_input) = self.layers[layer_number](
                 input_ids=input_ids,
@@ -743,6 +743,8 @@ def _patch_mtp():
                 *args,
                 **kwargs,
             )
+            if mtp_decoder_input is None:
+                decoder_input = None
 
             # append the output hidden states of the current mtp layer
             # to the hidden_states_list
