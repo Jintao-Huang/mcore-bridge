@@ -204,6 +204,10 @@ class ModelConfig(TransformerConfig):
     dsa_indexer_use_sparse_loss: bool = False
     dsa_indexer_rotary_interleaved: bool = False
 
+    # mtp
+    mtp_decoder_input_detach: bool = False
+    mtp_shared_weights: bool = False
+
     # visual
     hf_config: Optional[PretrainedConfig] = None
     vit_attn_impl: Optional[str] = None  # e.g. 'flash_attention_2'
@@ -225,7 +229,6 @@ class ModelConfig(TransformerConfig):
     task_type: Literal['causal_lm', 'seq_cls', 'embedding', 'generative_reranker'] = 'causal_lm'
     num_labels: Optional[int] = None
     mlp_padding_free: bool = False
-    mtp_decoder_input_detach: bool = False
 
     _mindspeed_defaults_cache = None
 
@@ -305,7 +308,11 @@ class ModelConfig(TransformerConfig):
             self.apply_query_key_layer_scaling = self.fp16
         if self.apply_query_key_layer_scaling:
             os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
-        # patch rotary_interleaved
+        if self.mtp_shared_weights:
+            self.mtp_unroll_steps = self.mtp_num_layers
+            self.mtp_num_layers = 1
+        else:
+            self.mtp_unroll_steps = self.mtp_num_layers
         super().__post_init__()
 
         self._check_npu()

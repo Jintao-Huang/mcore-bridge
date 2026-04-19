@@ -65,8 +65,11 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         sequence_len_offset: torch.Tensor = None,
         embedding=None,
         decoder_input=None,
+        layer_number: Optional[int] = None,
     ):
         assert context is None, 'multi token prediction + cross attention is not yet supported.'
+        if layer_number is None:
+            layer_number = self.layer_number
         input_ids, position_ids, decoder_input, hidden_states = self._get_embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -82,7 +85,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
             rotary_pos_emb = rotary_pos_emb[position_ids[0]]
         else:
             # mrope or not packed_seq
-            rotary_pos_emb = torch.roll(rotary_pos_emb, shifts=-self.layer_number, dims=0)
+            rotary_pos_emb = torch.roll(rotary_pos_emb, shifts=-layer_number, dims=0)
         if self.config.recompute_granularity == 'full' and self.training:
             hidden_states = self._checkpointed_forward(
                 partial(
