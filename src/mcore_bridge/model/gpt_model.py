@@ -416,7 +416,7 @@ class GPTModel(McoreGPTModel):
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
                 embedding=self.embedding,
-                decoder_input=decoder_input,
+                decoder_input=decoder_input if self.config.is_multimodal else None,
                 **(extra_block_kwargs or {}),
             )
             mtp_labels = labels.clone()
