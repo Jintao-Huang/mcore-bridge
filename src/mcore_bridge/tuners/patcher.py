@@ -17,7 +17,7 @@ from .lora import LoraParallelLinear
 def dispatch_megatron(
     target: nn.Module,
     adapter_name: str,
-    lora_config,
+    lora_config=None,
     **kwargs,
 ) -> Optional[nn.Module]:
     new_module = None
