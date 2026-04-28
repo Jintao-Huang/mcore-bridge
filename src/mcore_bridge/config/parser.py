@@ -56,7 +56,7 @@ config_mapping = {
     'original_max_position_embeddings': ['original_max_position_embeddings'],
     'partial_rotary_factor': ['partial_rotary_factor'],
     'first_k_dense_replace': ['first_k_dense_replace', 'moe_layer_start_index'],
-    'n_shared_experts': ['n_shared_experts', 'num_shared_expert', 'moe_num_shared_experts'],
+    'n_shared_experts': ['n_shared_experts', 'num_shared_expert', 'moe_num_shared_experts', 'num_shared_experts'],
     'window_size': ['sliding_window'],
     'layer_types': ['layer_types'],
     'interleave_moe_layer_step': ['interleave_moe_layer_step'],
