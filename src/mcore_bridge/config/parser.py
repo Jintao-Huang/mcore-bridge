@@ -30,6 +30,8 @@ config_mapping = {
     'moe_router_group_topk': ['topk_group'],
     'num_moe_experts': ['num_experts', 'n_routed_experts', 'moe_num_experts', 'num_local_experts'],
     'moe_router_pre_softmax': ['norm_topk_prob'],
+    'moe_router_enable_expert_bias': ['moe_router_enable_expert_bias'],
+    'rotary_interleaved': ['rope_interleave'],
     # deepseek
     'q_lora_rank': ['q_lora_rank'],
     'kv_lora_rank': ['kv_lora_rank'],
@@ -145,7 +147,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             if isinstance(val, list) and val and min(val) == max(val):
                 res[key] = val[0]
         n_shared_experts = res.pop('n_shared_experts')
-    elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4'}:
+    elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4', 'bailing_moe'}:
         res['rotary_interleaved'] = True
     elif llm_model_type == 'gpt_oss':
         res['add_bias_linear'] = True
