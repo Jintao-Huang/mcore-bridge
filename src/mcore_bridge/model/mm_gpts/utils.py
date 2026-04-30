@@ -46,7 +46,7 @@ class HuggingFaceVit(_HuggingFaceModule, ABC):
             elif key in {'torch_dtype', 'params_dtype'}:
                 setattr(hf_config, key, torch_dtype)
 
-    def __init__(self, config: ModelConfig, ignore_init_model_cls=None):
+    def __init__(self, config: ModelConfig):
         super().__init__(config)
         hf_config = config.hf_config
         self.set_torch_dtype(hf_config, config.params_dtype)
