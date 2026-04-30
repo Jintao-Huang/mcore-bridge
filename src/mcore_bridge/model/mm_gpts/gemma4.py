@@ -1,8 +1,12 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from transformers import AutoModel, PretrainedConfig
+from typing import Optional
 
-from mcore_bridge.bridge import GPTBridge
+from mcore_bridge.bridge import MultimodalGPTBridge
+from mcore_bridge.config import ModelConfig
 
 from ..constant import ModelType
 from ..gpt_model import GPTModel
@@ -36,11 +40,29 @@ class Gemma4Vit(HuggingFaceVit):
         return inputs_embeds
 
 
-class Gemma4Bridge(GPTBridge):
+class Gemma4SelfAttention(SelfAttention):
+
+    def __init__(
+        self,
+        config: ModelConfig,
+        submodules: SelfAttentionSubmodules,
+        layer_number: int,
+        *args,
+        **kwargs,
+    ):
+        text_config = config.hf_config.text_config
+        super().__init__(config, submodules, layer_number, *args, **kwargs)
+
+
+class Gemma4Bridge(MultimodalGPTBridge):
     pass
 
 
 class Gemma4TextGPTModel(GPTModel):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        print()
 
     def _set_inv_freq(self):
         rope_scaling = self.config.rope_scaling
@@ -68,12 +90,13 @@ class Gemma4GPTModel(MultimodalGPTModel):
 
 class Gemma4Loader(ModelLoader):
     model_cls = Gemma4GPTModel
-    # def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
-    #     layer_specs = get_gpt_decoder_block_spec(
-    #         self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
-    #     for layer_spec in layer_specs.layer_specs:
-    #         pass
-    #     return layer_specs
+
+    def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
+        layer_specs = get_gpt_decoder_block_spec(
+            self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
+        for layer_spec in layer_specs.layer_specs:
+            layer_spec.submodules.self_attention.module = Gemma4SelfAttention
+        return layer_specs
 
 
 register_model(
