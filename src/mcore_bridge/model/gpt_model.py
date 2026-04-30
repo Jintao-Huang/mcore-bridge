@@ -220,7 +220,7 @@ class GPTModel(McoreGPTModel):
         if decoder_input is not None and self.training and torch.is_grad_enabled() and not decoder_input.requires_grad:
             # fix LoRA incompatibility with gradient checkpointing
             decoder_input = decoder_input.requires_grad_(True)
-        rotary_pos_emb, rotary_pos_cos, decoder_rotary_pos_emb, rotary_pos_sin = self._get_rotary_pos_emb(
+        rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin = self._get_rotary_pos_emb(
             decoder_input, position_ids, packed_seq_params=packed_seq_params)
 
         if (in_inference_mode and ((self.config.enable_cuda_graph and self.config.cuda_graph_scope != 'full_iteration')

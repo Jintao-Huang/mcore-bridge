@@ -1,10 +1,14 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import copy
 from transformers import AutoModel, PretrainedConfig
 
 from mcore_bridge.bridge import GPTBridge
 
 from ..constant import ModelType
+from ..gpt_model import GPTModel
+from ..mm_gpt_model import MultimodalGPTModel
 from ..register import ModelLoader, ModelMeta, register_model
+from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
 
 
@@ -22,15 +26,8 @@ class Gemma4Vit(HuggingFaceVit):
     def prepare_model(self, hf_config: PretrainedConfig):
         from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder
         self.vision_tower = AutoModel.from_config(hf_config.vision_config)
-        self.vocab_size = hf_config.text_config.vocab_size
-
-        language_model = AutoModel.from_config(config=hf_config.text_config)
-        self.language_model = language_model
-        self.vocab_size_per_layer_input = hf_config.text_config.vocab_size_per_layer_input
         self.audio_tower = AutoModel.from_config(hf_config.audio_config) if hf_config.audio_config is not None else None
-        self.embed_vision = (
-            Gemma4MultimodalEmbedder(hf_config.vision_config, hf_config.text_config)
-            if hf_config.vision_config is not None else None)
+        self.embed_vision = Gemma4MultimodalEmbedder(hf_config.vision_config, hf_config.text_config)
         self.embed_audio = (
             Gemma4MultimodalEmbedder(hf_config.audio_config, hf_config.text_config)
             if hf_config.audio_config is not None else None)
@@ -43,8 +40,34 @@ class Gemma4Bridge(GPTBridge):
     pass
 
 
+class Gemma4TextGPTModel(GPTModel):
+
+    def _set_inv_freq(self):
+        rope_scaling = self.config.rope_scaling
+        self.config.rope_scaling = rope_scaling['sliding_attention']
+        new_inv_freq, attention_scaling = get_rope_inv_freq(self.config)
+        assert attention_scaling == 1, 'not support'
+        self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
+        # full
+        self.full_rotary_pos_emb = copy.copy(self.rotary_pos_emb)
+        self.config.rope_scaling = rope_scaling['full_attention']
+        kwargs = {}
+        if self.config.rope_scaling['rope_type'] == 'proportional':
+            kwargs['head_dim_key'] = 'global_head_dim'
+        new_inv_freq, attention_scaling = get_rope_inv_freq(self.config, **kwargs)
+        assert attention_scaling == 1, 'not support'
+        self.full_rotary_pos_emb.inv_freq = new_inv_freq
+        self.attention_scaling = attention_scaling
+
+        self.config.rope_scaling = rope_scaling
+
+
+class Gemma4GPTModel(MultimodalGPTModel):
+    language_model_cls = Gemma4TextGPTModel
+
+
 class Gemma4Loader(ModelLoader):
-    pass
+    model_cls = Gemma4GPTModel
     # def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
     #     layer_specs = get_gpt_decoder_block_spec(
     #         self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
