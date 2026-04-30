@@ -39,11 +39,10 @@ class HuggingFaceVit(_HuggingFaceModule, ABC):
 
     @staticmethod
     def set_torch_dtype(hf_config, torch_dtype):
-        for key in dir(hf_config):
-            value = getattr(hf_config, key, None)
+        for key, value in hf_config.__dict__.items():
             if isinstance(value, PretrainedConfig):
                 HuggingFaceVit.set_torch_dtype(value, torch_dtype)
-            elif key in {'torch_dtype', 'params_dtype'}:
+            elif key in {'torch_dtype', 'params_dtype', 'dtype'}:
                 setattr(hf_config, key, torch_dtype)
 
     def __init__(self, config: ModelConfig, ignore_init_model_cls=None):
