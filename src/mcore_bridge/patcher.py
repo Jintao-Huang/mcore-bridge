@@ -1,4 +1,3 @@
-import megatron.core
 import peft
 import sys
 import torch
@@ -24,7 +23,6 @@ from typing import List, Optional, Tuple
 
 from mcore_bridge.utils import get_logger, is_flash_attn_3_available
 
-mcore_013 = version.parse(megatron.core.__version__) >= version.parse('0.13.0rc0')
 logger = get_logger()
 
 
@@ -102,12 +100,8 @@ def _patch_mla_attention():
         # Adjust key, value for inference
         # ===================================================
         # rotary_pos_emb = None
-        if mcore_013:
-            query, key, value, _, attn_mask_type, _ = self._adjust_key_value_for_inference(
-                inference_context, query, key, value, rotary_pos_emb=None)
-        else:
-            query, key, value, _, attn_mask_type = self._adjust_key_value_for_inference(
-                inference_context, query, key, value, rotary_pos_emb=None)
+        query, key, value, _, attn_mask_type, _ = self._adjust_key_value_for_inference(
+            inference_context, query, key, value, rotary_pos_emb=None)
 
         # TODO: Currently, TE can only accept contiguous tensors for MLA
         query = query.contiguous()
@@ -523,8 +517,6 @@ def _patch_mrope():
         use_batched_rope = (freqs.dim() >= 1 and freqs.shape[0] == cu_seqlens_for_batched[-1]).item()
         if not use_batched_rope:
             logger.warning_once('Using non-batched RoPE, which may affect performance.')
-            if mcore_013:
-                kwargs['cp_group'] = cp_group
             return _origin_apply_rotary_pos_emb_thd(
                 t,
                 cu_seqlens,
@@ -532,6 +524,7 @@ def _patch_mrope():
                 rotary_interleaved=rotary_interleaved,
                 multi_latent_attention=multi_latent_attention,
                 mscale=mscale,
+                cp_group=cp_group,
                 **kwargs,
             )
 
