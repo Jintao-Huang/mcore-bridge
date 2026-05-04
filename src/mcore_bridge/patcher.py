@@ -13,7 +13,6 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
                                                     gather_from_tensor_model_parallel_region,
                                                     scatter_to_sequence_parallel_region)
-from megatron.core.transformer import TransformerLayer
 from megatron.core.transformer.multi_latent_attention import MLASelfAttention, MultiLatentAttention
 from megatron.core.transformer.multi_token_prediction import MultiTokenPredictionBlock, get_mtp_layer_offset
 from megatron.core.utils import deprecate_inference_params
@@ -413,34 +412,6 @@ def _patch_peft_ModulesToSaveWrapper():
     peft_module.OriginModulesToSaveWrapper = OriginModulesToSaveWrapper
 
 
-def _patch_TransformerLayer():
-    _origin_forward = TransformerLayer.forward
-
-    def forward(self, *_args, **kwargs):
-        """
-        Perform a forward pass through the transformer layer.
-
-        This method calls the core computation of a transformer layer, including
-        self-attention, cross-attention (if applicable), and feed-forward operations.
-        """
-        if not mcore_013:
-            return _origin_forward(self, *_args, **kwargs)
-        hidden_states, context = self._forward_attention(*_args, **kwargs)
-        mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
-        mask = None
-        if mlp_padding_free and hidden_states.shape[1] > 1:
-            mask = ((~kwargs['attention_mask']).sum(dim=(1, 2)) > 0).t()
-            hidden_states = hidden_states[mask][:, None]
-        output = self._forward_mlp(hidden_states, kwargs.get('inference_context', None))
-        if mask is not None:
-            new_output = hidden_states.new_zeros((*mask.shape, output.shape[-1]))
-            new_output[mask] = output.squeeze(1)
-            output = new_output
-        return output, context
-
-    TransformerLayer.forward = forward
-
-
 def _patch_TELinear():
 
     def __repr__(self):
@@ -769,7 +740,6 @@ def apply_patch():
     # patch module
     _patch_mla_attention()
     _patch_TEGroupedLinear()
-    _patch_TransformerLayer()
     _patch_TELinear()
     _patch_mrope()
     _patch_mtp()
