@@ -4,7 +4,7 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from transformers import AutoModel, PretrainedConfig
 from typing import Optional
-
+from megatron.core.transformer.mlp import MLP
 from mcore_bridge.bridge import MultimodalGPTBridge
 from mcore_bridge.config import ModelConfig
 
@@ -51,7 +51,27 @@ class Gemma4SelfAttention(SelfAttention):
         **kwargs,
     ):
         text_config = config.hf_config.text_config
+        self.is_sliding = text_config.layer_types[layer_number - 1] == 'sliding_attention'
+        self.sliding_window = text_config.sliding_window if self.is_sliding else None
+        kv_channels = config.kv_channels
+        config.kv_channels = text_config.global_head_dim if not self.is_sliding and text_config.global_head_dim else text_config.head_dim
         super().__init__(config, submodules, layer_number, *args, **kwargs)
+        config.kv_channels = kv_channels
+
+class Gemma4MLP(MLP):
+    def __init__(
+        self,
+        config: ModelConfig,
+        submodules: SelfAttentionSubmodules,
+        *args,
+        **kwargs,
+    ):
+        text_config = config.hf_config.text_config
+        self.enable_moe_block = text_config.enable_moe_block
+        first_kv_shared_layer_idx = text_config.num_hidden_layers - text_config.num_kv_shared_layers
+        is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+        use_double_wide_mlp = config.use_double_wide_mlp and is_kv_shared_layer
+        super().__init__(config, submodules, *args, **kwargs)
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
@@ -96,6 +116,7 @@ class Gemma4Loader(ModelLoader):
             self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
         for layer_spec in layer_specs.layer_specs:
             layer_spec.submodules.self_attention.module = Gemma4SelfAttention
+            layer_spec.submodules.mlp.module = Gemma4MLP
         return layer_specs
 
 
