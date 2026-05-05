@@ -15,7 +15,7 @@ from mcore_bridge.bridge import GPTBridge
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.utils import get_logger
 
-from .modules import MultiTokenPredictionLayer
+from .modules import CustomTransformerLayer, MultiTokenPredictionLayer
 
 if TYPE_CHECKING:
     from .gpt_model import GPTModel
@@ -137,6 +137,10 @@ class ModelLoader:
             for layer_spec in transformer_layer_spec.layer_specs:
                 if hasattr(layer_spec.submodules.mlp.submodules, 'shared_experts'):
                     layer_spec.submodules.mlp.submodules.shared_experts.params = {'gate': True}
+
+    def _set_custom_layer(self, transformer_layer_spec):
+        pass
+        # CustomTransformerLayer
 
     def build_model(
         self,
