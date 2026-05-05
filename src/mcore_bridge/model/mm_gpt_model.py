@@ -1,5 +1,4 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-import megatron.core
 import torch
 from contextlib import contextmanager
 from megatron.core import InferenceParams

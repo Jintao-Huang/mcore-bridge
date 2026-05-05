@@ -134,7 +134,6 @@ class CustomTransformerLayer(TransformerLayer):
         from megatron.core.transformer.moe.moe_layer import MoELayer
 
         from mcore_bridge.model.gpts.glm4 import Glm4MLP
-        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP
 
         # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
         # We can change MLP to accept pg_collection but it makes the logic implicit
@@ -149,13 +148,11 @@ class CustomTransformerLayer(TransformerLayer):
             elif submodules.mlp.module in (MLP, Glm4MLP):
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
-            elif submodules.mlp.module == Gemma4MLP:
-                additional_mlp_kwargs['layer_number'] = layer_number
             elif TEFusedMLP is not None and submodules.mlp.module == TEFusedMLP:
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
-                logger.warning_once(f'Unknown MLP type: {type(submodules.mlp)}. Using default kwargs.')
+                logger.warning_once(f'Unknown MLP type: {submodules.mlp.module}. Using default kwargs.')
         self.mlp = build_module(submodules.mlp, config=self.config, **additional_mlp_kwargs)
         if hasattr(self.mlp, 'set_layer_number'):
             self.mlp.set_layer_number(self.layer_number)
