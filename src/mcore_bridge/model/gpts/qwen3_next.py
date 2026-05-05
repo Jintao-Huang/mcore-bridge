@@ -9,8 +9,8 @@ from megatron.core.models.huggingface import HuggingFaceModule as _HuggingFaceMo
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel import (all_gather_last_dim_from_tensor_parallel_region,
-                                           gather_from_sequence_parallel_region,
-                                           reduce_scatter_to_sequence_parallel_region)
+                                           gather_from_sequence_parallel_region, scatter_to_sequence_parallel_region)
+from megatron.core.tensor_parallel.random import get_cuda_rng_tracker
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
@@ -462,7 +462,7 @@ class Qwen3NextGatedDeltaNet(_HuggingFaceModule, _Qwen3NextGatedDeltaNet):
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         config = self.config
         if config.sequence_parallel and config.tensor_model_parallel_size > 1:
-            hidden_states = gather_from_sequence_parallel_region(hidden_states)
+            hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
         seq_len = hidden_states.shape[0]
         packed_seq_params = kwargs.get('packed_seq_params')
         thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
@@ -482,15 +482,15 @@ class Qwen3NextGatedDeltaNet(_HuggingFaceModule, _Qwen3NextGatedDeltaNet):
         else:
             hidden_states = hidden_states.transpose(0, 1)
             attention_mask = resolve_gdn_attention_mask(kwargs)
-        res = super().forward(hidden_states=hidden_states, attention_mask=attention_mask)
+        with get_cuda_rng_tracker().fork('data-parallel-rng'):
+            res = super().forward(hidden_states=hidden_states, attention_mask=attention_mask)
         if thd_format:
             res = res[attention_mask][:, None]
             res = torch.concat([res, res.new_zeros(seq_len - res.shape[0], 1, res.shape[2])])
         else:
             res = res.transpose(0, 1).contiguous()
         if config.sequence_parallel and config.tensor_model_parallel_size > 1:
-            # Quick fix for dropout issue, awaiting ms-swift 4.0 refactor
-            res = reduce_scatter_to_sequence_parallel_region(res) / config.tensor_model_parallel_size
+            res = scatter_to_sequence_parallel_region(res)
         return res, None
 
 

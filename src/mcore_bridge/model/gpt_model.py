@@ -486,7 +486,7 @@ class GPTModel(McoreGPTModel):
 
         if self.config.task_type in {'seq_cls', 'embedding'
                                      } and self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
-            hidden_states = gather_from_sequence_parallel_region(hidden_states)
+            hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
 
         if self.config.task_type == 'embedding':
             logits = F.normalize(hidden_states, p=2, dim=-1)

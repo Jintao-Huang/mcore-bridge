@@ -155,7 +155,7 @@ class CustomTransformerLayer(TransformerLayer):
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
-                logger.warning_once(f'Unknown MLP type: {type(submodules.mlp)}. Using default kwargs.')
+                logger.warning_once(f'Unknown MLP type: {submodules.mlp.module}. Using default kwargs.')
         self.mlp = build_module(submodules.mlp, config=self.config, **additional_mlp_kwargs)
         if hasattr(self.mlp, 'set_layer_number'):
             self.mlp.set_layer_number(self.layer_number)
@@ -242,6 +242,7 @@ class CustomTransformerLayer(TransformerLayer):
         self-attention, cross-attention (if applicable), and feed-forward operations.
         """
         hidden_states, context = self._forward_attention(*args, **kwargs)
+        # If padding_free is set, attention_mask does not exist.
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
         mask = None
         enable_sp = self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1
