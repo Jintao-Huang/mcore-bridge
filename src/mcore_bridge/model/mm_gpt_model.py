@@ -1,5 +1,4 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-import megatron.core
 import torch
 from contextlib import contextmanager
 from megatron.core import InferenceParams
@@ -15,6 +14,7 @@ from .gpt_model import GPTModel
 
 
 class MultimodalGPTModel(MegatronModule):
+    language_model_cls = GPTModel
 
     def __init__(self,
                  config: ModelConfig,
@@ -26,7 +26,8 @@ class MultimodalGPTModel(MegatronModule):
         super().__init__(config)
         self.pre_process = pre_process
         self.post_process = post_process
-        self.language_model = GPTModel(config, transformer_layer_spec, pre_process, post_process, *_args, **kwargs)
+        self.language_model = self.language_model_cls(config, transformer_layer_spec, pre_process, post_process, *_args,
+                                                      **kwargs)
         self.vp_stage = self.language_model.vp_stage
         self.share_embeddings_and_output_weights = self.language_model.share_embeddings_and_output_weights
         self.model_meta = config.model_meta

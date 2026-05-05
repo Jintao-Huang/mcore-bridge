@@ -91,11 +91,11 @@ class Glm4Bridge(GPTBridge):
 class Glm4Loader(ModelLoader):
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
-        layer_spec = self._get_transformer_layer_spec()
-        layer_spec.submodules.self_attention.module = Glm4SelfAttention
-        layer_spec.submodules.mlp.module = Glm4MLP
-        transformer_layer.MLP = Glm4MLP  # patch
-        return layer_spec
+        transformer_layer_spec = super().get_transformer_layer_spec(vp_stage)
+        for layer_spec in transformer_layer_spec.layer_specs:
+            layer_spec.submodules.self_attention.module = Glm4SelfAttention
+            layer_spec.submodules.mlp.module = Glm4MLP
+        return transformer_layer_spec
 
 
 register_model(ModelMeta(
