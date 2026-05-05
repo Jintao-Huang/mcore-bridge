@@ -1,6 +1,5 @@
 import enum
 import inspect
-import megatron.core
 import torch
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.identity_op import IdentityOp
@@ -10,7 +9,6 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import (TransformerLayer, TransformerLayerSubmodules,
                                                          get_transformer_layer_offset)
 from megatron.core.utils import get_pg_rank
-from packaging import version
 from typing import Optional
 
 from mcore_bridge.utils import get_logger
@@ -30,8 +28,6 @@ except ImportError:
         moe_preprocess = 6  # Captures MoE preprocessing part (requires moe_router)
         mamba = 7  # Captures Mamba layers
 
-
-mcore_013 = version.parse(megatron.core.__version__) >= version.parse('0.13.0rc0')
 
 logger = get_logger()
 
@@ -243,8 +239,6 @@ class CustomTransformerLayer(TransformerLayer):
         This method calls the core computation of a transformer layer, including
         self-attention, cross-attention (if applicable), and feed-forward operations.
         """
-        if not mcore_013:
-            return super().forward(self, *args, **kwargs)
         hidden_states, context = self._forward_attention(*args, **kwargs)
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
         mask = None
