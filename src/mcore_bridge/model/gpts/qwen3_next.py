@@ -301,7 +301,7 @@ class Qwen3NextSelfAttention(SelfAttention):
                     k_pos_emb,
                     config=self.config,
                     cu_seqlens=cu_seqlens_kv,
-                    **kwargs,
+                    cp_group=self.pg_collection.cp,
                 )
 
             # TODO, can apply positional embedding to value_layer so it has
