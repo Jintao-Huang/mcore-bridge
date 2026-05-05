@@ -1,7 +1,8 @@
+import enum
+import inspect
 import megatron.core
 import torch
 from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.transformer.enums import CudaGraphScope, LayerType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
@@ -13,6 +14,22 @@ from packaging import version
 from typing import Optional
 
 from mcore_bridge.utils import get_logger
+
+try:
+    from megatron.core.transformer.enums import CudaGraphScope
+except ImportError:
+
+    class CudaGraphScope(enum.Enum):
+        """Cuda Graph Scope - defines which parts of the model to capture."""
+
+        full_iteration = 1  # Captures the entire training/inference iteration
+        attn = 2  # Captures attention layers
+        mlp = 3  # Captures MLP layers (dense layers only)
+        moe = 4  # Captures MoE layers (drop-and-pad MoE layers only)
+        moe_router = 5  # Captures MoE router part
+        moe_preprocess = 6  # Captures MoE preprocessing part (requires moe_router)
+        mamba = 7  # Captures Mamba layers
+
 
 mcore_013 = version.parse(megatron.core.__version__) >= version.parse('0.13.0rc0')
 
@@ -34,7 +51,7 @@ class CustomTransformerLayer(TransformerLayer):
         pp_layer_offset: Optional[int] = None,
     ):
         self.submodules_config = submodules
-        super().__init__(config=config, vp_stage=vp_stage)
+        super(TransformerLayer, self).__init__(config=config, vp_stage=vp_stage)
 
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups()
@@ -118,6 +135,9 @@ class CustomTransformerLayer(TransformerLayer):
         from megatron.core.transformer.moe.experts import SequentialMLP, TEGroupedMLP
         from megatron.core.transformer.moe.moe_layer import MoELayer
 
+        from mcore_bridge.model.gpts.glm4 import Glm4MLP
+        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP
+
         # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
         # We can change MLP to accept pg_collection but it makes the logic implicit
         # The conditional below is to make the logic explicit
@@ -126,16 +146,18 @@ class CustomTransformerLayer(TransformerLayer):
             if submodules.mlp.module in (MoELayer, TEGroupedMLP, SequentialMLP):
                 additional_mlp_kwargs['pg_collection'] = pg_collection
                 # Pass is_mtp_layer flag to MoELayer to distinguish MTP MoE layers.
-                if submodules.mlp.module == MoELayer:
+                if submodules.mlp.module == MoELayer and 'is_mtp_layer' in inspect.signature(MoELayer).parameters:
                     additional_mlp_kwargs['is_mtp_layer'] = self.is_mtp_layer
-            elif submodules.mlp.module == MLP:
+            elif submodules.mlp.module in (MLP, Glm4MLP):
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
+            elif submodules.mlp.module == Gemma4MLP:
+                additional_mlp_kwargs['layer_number'] = layer_number
             elif TEFusedMLP is not None and submodules.mlp.module == TEFusedMLP:
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
-                logger.warning_once(f"Unknown MLP type: {type(submodules.mlp)}. Using default kwargs.")
+                logger.warning_once(f'Unknown MLP type: {type(submodules.mlp)}. Using default kwargs.')
         self.mlp = build_module(submodules.mlp, config=self.config, **additional_mlp_kwargs)
         if hasattr(self.mlp, 'set_layer_number'):
             self.mlp.set_layer_number(self.layer_number)
@@ -198,12 +220,13 @@ class CustomTransformerLayer(TransformerLayer):
             if 'mlp' in self.config.recompute_modules:
                 if not self.is_moe_layer:
                     self.recompute_mlp = True
-        self.offload_attn_norm = (
-            self.config.fine_grained_activation_offloading and 'attn_norm' in self.config.offload_modules
-            and not isinstance(self.input_layernorm, IdentityOp))
-        self.offload_mlp_norm = (
-            self.config.fine_grained_activation_offloading and 'mlp_norm' in self.config.offload_modules
-            and not isinstance(self.pre_mlp_layernorm, IdentityOp))
+        if hasattr(self.config, 'fine_grained_activation_offloading'):
+            self.offload_attn_norm = (
+                self.config.fine_grained_activation_offloading and 'attn_norm' in self.config.offload_modules
+                and not isinstance(self.input_layernorm, IdentityOp))
+            self.offload_mlp_norm = (
+                self.config.fine_grained_activation_offloading and 'mlp_norm' in self.config.offload_modules
+                and not isinstance(self.pre_mlp_layernorm, IdentityOp))
 
         # @jcasper how should we handle nvfuser?
         # Set bias+dropout+add fusion grad_enable execution handler.

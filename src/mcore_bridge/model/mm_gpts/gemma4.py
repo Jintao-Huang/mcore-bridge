@@ -56,8 +56,8 @@ class Gemma4SelfAttention(SelfAttention):
         self.sliding_window = text_config.sliding_window if self.is_sliding else None
         kv_channels = config.kv_channels
         config.kv_channels = (
-            text_config.global_head_dim if not self.is_sliding and text_config.global_head_dim else text_config.head_dim
-        )
+            text_config.global_head_dim
+            if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
         super().__init__(config, submodules, layer_number, *args, **kwargs)
         config.kv_channels = kv_channels
 

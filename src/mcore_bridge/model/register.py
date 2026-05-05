@@ -90,41 +90,20 @@ class ModelLoader:
         layer_spec.submodules.self_attention = dsa_spec
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
-        if self.config.num_moe_experts:
-            transformer_layer_spec = get_gpt_decoder_block_spec(
-                self.config,
-                use_transformer_engine=True,
-                normalization=self.config.normalization,
-                qk_l2_norm=self.config.qk_l2_norm,
-                vp_stage=vp_stage)
-            if self.config.experimental_attention_variant == 'dsa':
-                for layer_spec in transformer_layer_spec.layer_specs:
-                    self._replace_spec_dsa(layer_spec)
-        else:
-            transformer_layer_spec = self._get_transformer_layer_spec()
-        return transformer_layer_spec
-
-    def _get_transformer_layer_spec(self):
-        config = self.config
-        transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
-            config.num_moe_experts,
-            config.moe_grouped_gemm,
-            config.qk_layernorm,
-            config.multi_latent_attention,
-            qk_l2_norm=config.qk_l2_norm,
-        )
+        transformer_layer_spec = get_gpt_decoder_block_spec(
+            self.config,
+            use_transformer_engine=True,
+            normalization=self.config.normalization,
+            qk_l2_norm=self.config.qk_l2_norm,
+            vp_stage=vp_stage)
+        if self.config.experimental_attention_variant == 'dsa':
+            for layer_spec in transformer_layer_spec.layer_specs:
+                self._replace_spec_dsa(layer_spec)
         return transformer_layer_spec
 
     def get_mtp_block_spec(self, transformer_layer_spec, vp_stage: Optional[int] = None):
-        if hasattr(transformer_layer_spec, 'layer_specs') and len(transformer_layer_spec.layer_specs) == 0:
-            # Get the decoder layer spec explicitly if no decoder layer in the last stage,
-            # Only happens with block spec (TransformerBlockSubmodules) when using MoE.
-            # TODO: remove
-            transformer_layer_spec_for_mtp = self._get_transformer_layer_spec()
-        else:
-            transformer_layer_spec_for_mtp = transformer_layer_spec
         mtp_block_spec = get_gpt_mtp_block_spec(
-            self.config, transformer_layer_spec_for_mtp, use_transformer_engine=True, vp_stage=vp_stage)
+            self.config, transformer_layer_spec, use_transformer_engine=True, vp_stage=vp_stage)
         if mtp_block_spec is not None:
             for layer_spec in mtp_block_spec.layer_specs:
                 layer_spec.module = MultiTokenPredictionLayer
@@ -139,8 +118,8 @@ class ModelLoader:
                     layer_spec.submodules.mlp.submodules.shared_experts.params = {'gate': True}
 
     def _set_custom_layer(self, transformer_layer_spec):
-        pass
-        # CustomTransformerLayer
+        for layer_spec in transformer_layer_spec.layer_specs:
+            layer_spec.module = CustomTransformerLayer
 
     def build_model(
         self,
@@ -150,6 +129,7 @@ class ModelLoader:
     ) -> Union['GPTModel', 'MultimodalGPTModel']:
         transformer_layer_spec = self.get_transformer_layer_spec(vp_stage=vp_stage)
         self._set_shared_expert_gate(transformer_layer_spec)
+        self._set_custom_layer(transformer_layer_spec)
         mtp_block_spec = None
         if self.config.mtp_num_layers is not None:
             mtp_block_spec = self.get_mtp_block_spec(transformer_layer_spec, vp_stage=vp_stage)
