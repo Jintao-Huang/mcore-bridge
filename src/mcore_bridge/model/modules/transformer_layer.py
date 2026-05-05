@@ -2,6 +2,8 @@ import enum
 import inspect
 import torch
 from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
+                                                    scatter_to_sequence_parallel_region)
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
@@ -242,12 +244,30 @@ class CustomTransformerLayer(TransformerLayer):
         hidden_states, context = self._forward_attention(*args, **kwargs)
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
         mask = None
+        enable_sp = self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1
+        pad_size = 0
         if mlp_padding_free and hidden_states.shape[1] > 1:
+            if enable_sp:
+                hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
             mask = ((~kwargs['attention_mask']).sum(dim=(1, 2)) > 0).t()
             hidden_states = hidden_states[mask][:, None]
+            if enable_sp:
+                tp_size = self.config.tensor_model_parallel_size
+                num_tokens = hidden_states.shape[0]
+                remainder = num_tokens % tp_size
+                if remainder != 0:
+                    pad_size = tp_size - remainder
+                    hidden_states = torch.nn.functional.pad(hidden_states, (0, 0, 0, 0, 0, pad_size))
+                hidden_states = scatter_to_sequence_parallel_region(hidden_states)
         output = self._forward_mlp(hidden_states, kwargs.get('inference_context', None))
         if mask is not None:
-            new_output = hidden_states.new_zeros((*mask.shape, output.shape[-1]))
+            if enable_sp:
+                output = gather_from_sequence_parallel_region(output, tensor_parallel_output_grad=False)
+                if pad_size > 0:
+                    output = output[:-pad_size]
+            new_output = output.new_zeros((*mask.shape, output.shape[-1]))
             new_output[mask] = output.squeeze(1)
             output = new_output
+            if enable_sp:
+                output = scatter_to_sequence_parallel_region(output)
         return output, context
