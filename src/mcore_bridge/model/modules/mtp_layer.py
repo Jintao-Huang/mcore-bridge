@@ -184,7 +184,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         else:
             enable_sp = self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1
             if enable_sp:
-                decoder_input = gather_from_sequence_parallel_region(decoder_input)
+                decoder_input = gather_from_sequence_parallel_region(decoder_input, tensor_parallel_output_grad=False)
             decoder_input, _ = roll_tensor(
                 decoder_input.transpose(0, 2),
                 shifts=-1,
