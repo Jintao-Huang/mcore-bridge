@@ -12,7 +12,7 @@ from megatron.core.transformer.multi_token_prediction import MultiTokenPredictio
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.utils import make_viewless_tensor
 from typing import Callable, Optional
-
+g
 from mcore_bridge.utils import roll_tensor
 
 try:
