@@ -206,6 +206,6 @@ def _roll_tensor_packed_seq(tensor, shifts, dims, packed_seq_params, cp_group=No
 def roll_tensor(tensor, shifts=-1, dims=-1, cp_group=None, packed_seq_params=None):
     if mcore_016 or packed_seq_params is None:
         kwargs = {'packed_seq_params': packed_seq_params} if mcore_016 else {}
-        mcore_roll_tensor(tensor, shifts=shifts, dims=dims, cp_group=cp_group, **kwargs)
+        return mcore_roll_tensor(tensor, shifts=shifts, dims=dims, cp_group=cp_group, **kwargs)
     # mcore 0.15 & packed_seq_params
     return _roll_tensor_packed_seq(tensor, shifts, dims, packed_seq_params, cp_group)
