@@ -1,5 +1,4 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-import megatron.core
 import torch
 from copy import deepcopy
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, _get_extra_te_kwargs
@@ -10,13 +9,12 @@ from megatron.core.models.huggingface import HuggingFaceModule as _HuggingFaceMo
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel import (all_gather_last_dim_from_tensor_parallel_region,
-                                           gather_from_sequence_parallel_region,
-                                           reduce_scatter_to_sequence_parallel_region)
+                                           gather_from_sequence_parallel_region, scatter_to_sequence_parallel_region)
+from megatron.core.tensor_parallel.random import get_cuda_rng_tracker
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 from megatron.core.utils import deprecate_inference_params, is_fa_min_version
-from packaging import version
 from transformers.utils import is_torch_npu_available
 from typing import Optional, Tuple, Union
 
@@ -27,8 +25,6 @@ from mcore_bridge.utils import get_local_layer_specs, get_logger
 from ..constant import ModelType
 from ..register import ModelLoader, ModelMeta, register_model
 
-mcore_013 = version.parse(megatron.core.__version__) >= version.parse('0.13.0rc0')
-mcore_015 = version.parse(megatron.core.__version__) >= version.parse('0.15.0rc0')
 try:
     from flashattn_hopper.flash_attn_interface import _flash_attn_forward
     from flashattn_hopper.flash_attn_interface import flash_attn_with_kvcache as flash_attn3_with_kvcache
@@ -102,10 +98,6 @@ class Qwen3NextSelfAttention(SelfAttention):
     def __init__(self, config: ModelConfig, submodules: SelfAttentionSubmodules, *args, **kwargs):
         super(SelfAttention, self).__init__(config, submodules, *args, attention_type='self', **kwargs)
         kwargs = {}
-        if mcore_015:
-            kwargs['tp_group'] = self.pg_collection.tp
-        elif mcore_013:
-            kwargs['tp_group'] = self.model_comm_pgs.tp
         self.linear_qkv = build_module(
             submodules.linear_qkv,
             self.config.hidden_size,
@@ -117,6 +109,7 @@ class Qwen3NextSelfAttention(SelfAttention):
             skip_bias_add=False,
             is_expert=False,
             tp_comm_buffer_name='qkv',
+            tp_group=self.pg_collection.tp,
             **kwargs,
         )
 
@@ -253,7 +246,7 @@ class Qwen3NextSelfAttention(SelfAttention):
         if (in_decode_mode and self.config.enable_cuda_graph and inference_context.is_static_batching()):
             raise ValueError('CUDA graphs must use flash decode with static batching!')
 
-        result = self._adjust_key_value_for_inference(
+        query, key, value, rotary_pos_emb, attn_mask_type, block_table = self._adjust_key_value_for_inference(
             inference_context,
             query,
             key,
@@ -263,10 +256,6 @@ class Qwen3NextSelfAttention(SelfAttention):
             rotary_pos_sin,
             sequence_len_offset,
         )
-        if mcore_013:
-            query, key, value, rotary_pos_emb, attn_mask_type, block_table = result
-        else:
-            query, key, value, rotary_pos_emb, attn_mask_type = result
 
         if packed_seq_params is not None:
             query = query.squeeze(1)
@@ -277,11 +266,6 @@ class Qwen3NextSelfAttention(SelfAttention):
         # ================================================
         # relative positional embedding (rotary embedding)
         # ================================================
-        kwargs = {}
-        if mcore_015:
-            kwargs['cp_group'] = self.pg_collection.cp
-        elif mcore_013:
-            kwargs['cp_group'] = self.model_comm_pgs.cp
         nvtx_range_push(suffix='rotary_pos_emb')
         if rotary_pos_emb is not None and not self.config.flash_decode:
             q_pos_emb, k_pos_emb = rotary_pos_emb
@@ -306,18 +290,18 @@ class Qwen3NextSelfAttention(SelfAttention):
                         q_pos_emb,
                         config=self.config,
                         cu_seqlens=cu_seqlens_q,
-                        **kwargs,
+                        cp_group=self.pg_collection.cp,
                     )
                 else:
-                    query = inference_context.apply_rotary_emb_query(query, q_pos_emb, self.config, cu_seqlens_q,
-                                                                     **kwargs)
+                    query = inference_context.apply_rotary_emb_query(
+                        query, q_pos_emb, self.config, cu_seqlens_q, cp_group=self.pg_collection.cp)
             if k_pos_emb is not None:
                 key = apply_rotary_pos_emb(
                     key,
                     k_pos_emb,
                     config=self.config,
                     cu_seqlens=cu_seqlens_kv,
-                    **kwargs,
+                    cp_group=self.pg_collection.cp,
                 )
 
             # TODO, can apply positional embedding to value_layer so it has
@@ -478,7 +462,7 @@ class Qwen3NextGatedDeltaNet(_HuggingFaceModule, _Qwen3NextGatedDeltaNet):
     def forward(self, hidden_states: torch.Tensor, **kwargs):
         config = self.config
         if config.sequence_parallel and config.tensor_model_parallel_size > 1:
-            hidden_states = gather_from_sequence_parallel_region(hidden_states)
+            hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
         seq_len = hidden_states.shape[0]
         packed_seq_params = kwargs.get('packed_seq_params')
         thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
@@ -497,16 +481,16 @@ class Qwen3NextGatedDeltaNet(_HuggingFaceModule, _Qwen3NextGatedDeltaNet):
             hidden_states = new_hidden_states
         else:
             hidden_states = hidden_states.transpose(0, 1)
-            attention_mask = resolve_hf_attention_mask(kwargs)
-        res = super().forward(hidden_states=hidden_states, attention_mask=attention_mask)
+            attention_mask = resolve_gdn_attention_mask(kwargs)
+        with get_cuda_rng_tracker().fork('data-parallel-rng'):
+            res = super().forward(hidden_states=hidden_states, attention_mask=attention_mask)
         if thd_format:
             res = res[attention_mask][:, None]
             res = torch.concat([res, res.new_zeros(seq_len - res.shape[0], 1, res.shape[2])])
         else:
             res = res.transpose(0, 1).contiguous()
         if config.sequence_parallel and config.tensor_model_parallel_size > 1:
-            # Quick fix for dropout issue, awaiting ms-swift 4.0 refactor
-            res = reduce_scatter_to_sequence_parallel_region(res) / config.tensor_model_parallel_size
+            res = scatter_to_sequence_parallel_region(res)
         return res, None
 
 
@@ -561,13 +545,12 @@ class Qwen3NextLoader(ModelLoader):
 
         # Use Zero-Centered RMSNorm to match HuggingFace exactly (no +1/-1 conversion needed)
         layer_norm_impl = Qwen3NextRMSNorm
-        kwargs = {'use_kitchen': config.use_kitchen} if mcore_013 else {}
         moe_layer_spec = get_gpt_layer_with_transformer_engine_spec(
             num_experts=config.num_moe_experts,
             moe_grouped_gemm=config.moe_grouped_gemm,
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
-            **kwargs,
+            use_kitchen=config.use_kitchen,
         )
         layer_specs = []
         for is_linear_attention in self.config.linear_attention_freq:

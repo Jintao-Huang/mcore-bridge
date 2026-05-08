@@ -13,6 +13,8 @@ from megatron.core.transformer.spec_utils import build_module
 from megatron.core.utils import make_viewless_tensor
 from typing import Callable, Optional
 
+from mcore_bridge.utils import roll_tensor
+
 try:
     from megatron.core.typed_torch import apply_module
 except ImportError:
@@ -162,8 +164,6 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         packed_seq_params: Optional[PackedSeqParams] = None,
         decoder_input=None,
     ):
-        from megatron.core.transformer.multi_token_prediction import roll_tensor
-
         # Calc logits for the current Multi-Token Prediction (MTP) layers.
         input_ids, _ = roll_tensor(
             input_ids,
@@ -184,7 +184,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         else:
             enable_sp = self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1
             if enable_sp:
-                decoder_input = gather_from_sequence_parallel_region(decoder_input)
+                decoder_input = gather_from_sequence_parallel_region(decoder_input, tensor_parallel_output_grad=False)
             decoder_input, _ = roll_tensor(
                 decoder_input.transpose(0, 2),
                 shifts=-1,

@@ -1,4 +1,3 @@
-import megatron.core
 import peft
 import sys
 import torch
@@ -13,7 +12,6 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
                                                     gather_from_tensor_model_parallel_region,
                                                     scatter_to_sequence_parallel_region)
-from megatron.core.transformer import TransformerLayer
 from megatron.core.transformer.multi_latent_attention import MLASelfAttention, MultiLatentAttention
 from megatron.core.transformer.multi_token_prediction import MultiTokenPredictionBlock, get_mtp_layer_offset
 from megatron.core.utils import deprecate_inference_params
@@ -25,7 +23,6 @@ from typing import List, Optional, Tuple
 
 from mcore_bridge.utils import get_logger, is_flash_attn_3_available
 
-mcore_013 = version.parse(megatron.core.__version__) >= version.parse('0.13.0rc0')
 logger = get_logger()
 
 
@@ -103,12 +100,8 @@ def _patch_mla_attention():
         # Adjust key, value for inference
         # ===================================================
         # rotary_pos_emb = None
-        if mcore_013:
-            query, key, value, _, attn_mask_type, _ = self._adjust_key_value_for_inference(
-                inference_context, query, key, value, rotary_pos_emb=None)
-        else:
-            query, key, value, _, attn_mask_type = self._adjust_key_value_for_inference(
-                inference_context, query, key, value, rotary_pos_emb=None)
+        query, key, value, _, attn_mask_type, _ = self._adjust_key_value_for_inference(
+            inference_context, query, key, value, rotary_pos_emb=None)
 
         # TODO: Currently, TE can only accept contiguous tensors for MLA
         query = query.contiguous()
@@ -413,34 +406,6 @@ def _patch_peft_ModulesToSaveWrapper():
     peft_module.OriginModulesToSaveWrapper = OriginModulesToSaveWrapper
 
 
-def _patch_TransformerLayer():
-    _origin_forward = TransformerLayer.forward
-
-    def forward(self, *_args, **kwargs):
-        """
-        Perform a forward pass through the transformer layer.
-
-        This method calls the core computation of a transformer layer, including
-        self-attention, cross-attention (if applicable), and feed-forward operations.
-        """
-        if not mcore_013:
-            return _origin_forward(self, *_args, **kwargs)
-        hidden_states, context = self._forward_attention(*_args, **kwargs)
-        mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
-        mask = None
-        if mlp_padding_free and hidden_states.shape[1] > 1:
-            mask = ((~kwargs['attention_mask']).sum(dim=(1, 2)) > 0).t()
-            hidden_states = hidden_states[mask][:, None]
-        output = self._forward_mlp(hidden_states, kwargs.get('inference_context', None))
-        if mask is not None:
-            new_output = hidden_states.new_zeros((*mask.shape, output.shape[-1]))
-            new_output[mask] = output.squeeze(1)
-            output = new_output
-        return output, context
-
-    TransformerLayer.forward = forward
-
-
 def _patch_TELinear():
 
     def __repr__(self):
@@ -552,8 +517,6 @@ def _patch_mrope():
         use_batched_rope = (freqs.dim() >= 1 and freqs.shape[0] == cu_seqlens_for_batched[-1]).item()
         if not use_batched_rope:
             logger.warning_once('Using non-batched RoPE, which may affect performance.')
-            if mcore_013:
-                kwargs['cp_group'] = cp_group
             return _origin_apply_rotary_pos_emb_thd(
                 t,
                 cu_seqlens,
@@ -561,6 +524,7 @@ def _patch_mrope():
                 rotary_interleaved=rotary_interleaved,
                 multi_latent_attention=multi_latent_attention,
                 mscale=mscale,
+                cp_group=cp_group,
                 **kwargs,
             )
 
@@ -728,7 +692,8 @@ def _patch_mtp():
     def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor, hidden_states: torch.Tensor,
                 attention_mask: torch.Tensor, **kwargs) -> torch.Tensor:
         # get hidden states from previous mtp stages
-        offset = get_mtp_layer_offset(self.config, self.vp_stage)
+        get_offset_kwargs = {} if self.vp_stage is None else {'vp_stage': self.vp_stage}
+        offset = get_mtp_layer_offset(self.config, **get_offset_kwargs)
         assert offset == 0, 'not support offset'
         hidden_states_list = list(torch.chunk(hidden_states, 1 + offset, dim=0))
         hidden_states = hidden_states_list[offset]
@@ -769,7 +734,6 @@ def apply_patch():
     # patch module
     _patch_mla_attention()
     _patch_TEGroupedLinear()
-    _patch_TransformerLayer()
     _patch_TELinear()
     _patch_mrope()
     _patch_mtp()
