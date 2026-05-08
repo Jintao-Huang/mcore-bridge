@@ -147,7 +147,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             if isinstance(val, list) and val and min(val) == max(val):
                 res[key] = val[0]
         n_shared_experts = res.pop('n_shared_experts')
-    elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4', 'bailing_moe'}:
+    elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4'}:
         res['rotary_interleaved'] = True
     elif llm_model_type == 'gpt_oss':
         res['add_bias_linear'] = True

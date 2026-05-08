@@ -157,6 +157,10 @@ def test_olmoe():
     _test_model('allenai/OLMoE-1B-7B-0125-Instruct')
 
 
+def test_bailing():
+    _test_model('inclusionAI/Ling-mini-2.0')
+
+
 if __name__ == '__main__':
     # test_qwen2()
     # test_llama2()
@@ -169,7 +173,7 @@ if __name__ == '__main__':
     # test_megrez()
     # test_llama3_1()
     # test_llama3_2()
-    test_qwen3()
+    # test_qwen3()
     # test_qwen2_moe()
     # test_qwen3_moe()
     # test_internlm3()
@@ -190,3 +194,4 @@ if __name__ == '__main__':
     # test_minimax_m2()
     # test_glm4_moe_lite()
     # test_olmoe()
+    test_bailing()
