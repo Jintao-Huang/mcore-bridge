@@ -1,6 +1,8 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 from setuptools import find_packages, setup
 
+import re
+
 
 def get_readme():
     with open('README.md', encoding='utf-8') as f:
@@ -13,8 +15,7 @@ version_file = 'src/mcore_bridge/version.py'
 
 def get_version():
     with open(version_file, 'r', encoding='utf-8') as f:
-        exec(compile(f.read(), version_file, 'exec'))
-    return locals()['__version__']
+        return re.search(r'^__version__\s*=\s*["\'](.+?)["\']', f.read(), re.M).group(1)
 
 
 def parse_requirements(path='requirements.txt'):
