@@ -85,6 +85,7 @@ uv pip install -e . --torch-backend=auto
 | GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm4v, glm4v_moe, <br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |
 | Kimi     | kimi_k2, kimi_vl, kimi_k25                                   |
+| Bailing  | bailing_moe                                                  |
 | InternLM | internlm3, internvl_chat, internvl                           |
 | Ovis     | ovis2_5                                                      |
 | Llama    | llama, llama4                                                |
