@@ -73,6 +73,7 @@ class BailingMoeBridge(GPTBridge):
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool):
         self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'query_key_value.weight', to_mcore)
+        assert not self.config.add_bias_linear
         return hf_state_dict
 
 
