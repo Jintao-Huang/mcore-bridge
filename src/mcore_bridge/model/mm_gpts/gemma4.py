@@ -14,10 +14,10 @@ from mcore_bridge.config import ModelConfig
 from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..mm_gpt_model import MultimodalGPTModel
+from ..modules import CustomTransformerLayer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
-from ..modules import CustomTransformerLayer
 
 
 class Gemma4VNorm(torch.nn.Module):
@@ -82,8 +82,7 @@ class Gemma4SelfAttention(SelfAttention):
             if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
 
         # Alternative attention (k == v) for global layers when `attention_k_eq_v` is set
-        self.use_alternative_attention = (
-            getattr(text_config, 'attention_k_eq_v', False) and not self.is_sliding)
+        self.use_alternative_attention = (getattr(text_config, 'attention_k_eq_v', False) and not self.is_sliding)
         num_key_value_heads = (
             text_config.num_global_key_value_heads
             if self.use_alternative_attention else text_config.num_key_value_heads)
@@ -96,8 +95,7 @@ class Gemma4SelfAttention(SelfAttention):
         prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
         if self.is_kv_shared_layer:
             # For shared layers, reuse KV from the last non-shared layer of the same type
-            self.kv_shared_layer_index = (
-                len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
+            self.kv_shared_layer_index = (len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
             self.store_full_length_kv = False
         else:
             self.kv_shared_layer_index = None
@@ -126,8 +124,7 @@ class Gemma4SelfAttention(SelfAttention):
         # HF builds a `v_norm` (RMSNorm without learnable scale) for non-kv-shared layers.
         # mcore's SelfAttention has no v_layernorm by default, so attach one explicitly here.
         self.v_norm = (
-            Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon)
-            if not self.is_kv_shared_layer else None)
+            Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon) if not self.is_kv_shared_layer else None)
 
 
 class Gemma4MLP(MLP):
@@ -155,7 +152,12 @@ class Gemma4MLP(MLP):
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
-    pass
+
+    def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore):
+        self._set_state_dict(
+            mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore, _check_mg_param=False)
+        self._set_state_dict(
+            mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore, _check_mg_param=False)
 
 
 class Gemma4TextGPTModel(GPTModel):
@@ -183,6 +185,7 @@ class Gemma4TextGPTModel(GPTModel):
 
         self.config.rope_scaling = rope_scaling
 
+
 class Gemma4TransformerLayer(CustomTransformerLayer):
     pass
 
@@ -202,10 +205,10 @@ class Gemma4Loader(ModelLoader):
             layer_spec.submodules.mlp.module = Gemma4MLP
         return layer_specs
 
-
     def _set_custom_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = Gemma4TransformerLayer
+
 
 register_model(
     ModelMeta(

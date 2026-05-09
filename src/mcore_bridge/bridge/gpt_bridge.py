@@ -439,7 +439,8 @@ class GPTBridge:
                         to_mcore: bool,
                         *,
                         offset: float = 0,
-                        is_expert: bool = False):
+                        is_expert: bool = False,
+                        _check_mg_param: bool = True):
         if '.' in mg_key:
             module_key, param_key = mg_key.rsplit('.', 1)
         else:
@@ -487,7 +488,11 @@ class GPTBridge:
             else:
                 mg_param = deep_getattr(sub_module, param_key)
             if to_mcore:
-                assert mg_param is not None, f'mg_module: {mg_module}, mg_key: {mg_key}'
+                if mg_param is None:
+                    if _check_mg_param:
+                        raise ValueError(f'mg_module: {mg_module}, mg_key: {mg_key}')
+                    else:
+                        return
                 hf_weight = hf_state_dict[hf_key].load()
                 if module_key in {
                         'embedding.word_embeddings', 'output_layer'
