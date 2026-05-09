@@ -47,18 +47,65 @@ class Gemma4Vit(HuggingFaceVit):
     }
     _vision_tower = ['vision_tower', 'audio_tower']
     _aligner = ['embed_vision', 'embed_audio']
-    support_multimodal = False
 
     def prepare_model(self, hf_config: PretrainedConfig):
-        from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder, Gemma4Model
         self.vision_tower = AutoModel.from_config(hf_config.vision_config)
         self.audio_tower = AutoModel.from_config(hf_config.audio_config) if hf_config.audio_config is not None else None
         self.embed_vision = Gemma4MultimodalEmbedder(hf_config.vision_config, hf_config.text_config)
         self.embed_audio = (
             Gemma4MultimodalEmbedder(hf_config.audio_config, hf_config.text_config)
             if hf_config.audio_config is not None else None)
+        self.register_buffer("embed_scale", torch.tensor(hf_config.hidden_size**0.5), persistent=False)
+        self.model_cls = Gemma4Model
 
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
+        input_ids = kwargs.get('input_ids')
+        inputs_embeds *= self.embed_scale.to(inputs_embeds.dtype)
+
+        hf_config = self.hf_config
+        input_ids = kwargs.get('input_ids')
+        pixel_values = kwargs.get('pixel_values')
+        pixel_values_videos = kwargs.get('pixel_values_videos')
+        input_features = kwargs.get('input_features')
+        input_features_mask = kwargs.get('input_features_mask')
+        image_position_ids = kwargs.get('image_position_ids')
+        video_position_ids = kwargs.get('video_position_ids')
+
+        image_mask = input_ids == hf_config.image_token_id
+        video_mask = input_ids == hf_config.video_token_id
+        audio_mask = input_ids == hf_config.audio_token_id
+
+        if pixel_values is not None:
+            vision_outputs = self.vision_tower(
+                pixel_values=pixel_values.to(self.vision_tower.dtype),
+                pixel_position_ids=image_position_ids,
+            )
+            image_features = self.embed_vision(inputs_embeds=vision_outputs.last_hidden_state)
+            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            image_mask_e = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask_e, image_features)
+
+        if pixel_values_videos is not None:
+            pixel_values_videos_flat = pixel_values_videos.flatten(0, 1)
+            video_position_ids_flat = video_position_ids.flatten(0, 1) if video_position_ids is not None else None
+            vision_outputs = self.vision_tower(
+                pixel_values=pixel_values_videos_flat.to(self.vision_tower.dtype),
+                pixel_position_ids=video_position_ids_flat,
+            )
+            video_features = self.embed_vision(inputs_embeds=vision_outputs.last_hidden_state)
+            video_features = video_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            video_mask_e = video_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+            inputs_embeds = inputs_embeds.masked_scatter(video_mask_e, video_features)
+
+        if (input_features is not None and input_features_mask is not None and self.audio_tower is not None):
+            audio_outputs = self.audio_tower(input_features, input_features_mask, return_dict=True)
+            audio_features = self.embed_audio(inputs_embeds=audio_outputs.last_hidden_state)
+            audio_features = audio_features[audio_outputs.attention_mask]
+            audio_features = audio_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            audio_mask_e = audio_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+            inputs_embeds = inputs_embeds.masked_scatter(audio_mask_e, audio_features)
+
         return inputs_embeds
 
 
@@ -308,6 +355,9 @@ class Gemma4TextGPTModel(GPTModel):
         self.attention_scaling = attention_scaling
 
         self.config.rope_scaling = rope_scaling
+
+    def forward(self):
+        pass
 
 
 class Gemma4TransformerLayer(CustomTransformerLayer):
