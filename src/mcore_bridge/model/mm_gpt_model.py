@@ -98,7 +98,7 @@ class MultimodalGPTModel(MegatronModule):
             labels=labels,
             inference_params=inference_params,
             packed_seq_params=packed_seq_params,
-            **kwargs,
+            extra_block_kwargs=kwargs,
         )
 
     def set_input_tensor(self, input_tensor: torch.Tensor) -> None:
