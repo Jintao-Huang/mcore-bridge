@@ -40,9 +40,12 @@ class GPTBridge:
     hf_o_proj_key = 'o_proj'
     hf_attn_prefix = 'self_attn'
     hf_mlp_prefix = 'mlp'
+    hf_post_attention_layernorm = 'post_attention_layernorm'
     hf_gate_key = 'gate.weight'
     hf_shared_expert_key = None
     hf_expert_bias_key = 'gate.e_score_correction_bias'
+    additional_dim0_keys = {}
+    additional_dim1_keys = {}
 
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -124,11 +127,11 @@ class GPTBridge:
             'linear_kv_up_proj',
             # mtp
             'eh_proj',
-        }
+        } & self.additional_dim0_keys
         if self.config.task_type in {'causal_lm', 'generative_reranker'}:
             dim0_keys.add('output_layer')
         # RowLinear
-        dim1_keys = {'out_proj', 'linear_proj', 'linear_fc2'}
+        dim1_keys = {'out_proj', 'linear_proj', 'linear_fc2'} & self.additional_dim1_keys
         if 'lora_A' not in mg_key and 'lora_B' not in mg_key:
             key, suffix = mg_key.rsplit('.', 2)[-2:]
             if suffix == 'layer_norm_weight':
@@ -1592,13 +1595,13 @@ class GPTBridge:
             hf_state_dict.update(
                 self._set_moe_state(
                     mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore, is_mtp=is_mtp))
-            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict, 'post_attention_layernorm.weight',
+            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict, f'{self.hf_post_attention_layernorm}.weight',
                                  to_mcore)
         else:
             hf_state_dict.update(
                 self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
             self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
-                                 'post_attention_layernorm.weight', to_mcore)
+                                 f'{self.hf_post_attention_layernorm}.weight', to_mcore)
         return hf_state_dict
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):

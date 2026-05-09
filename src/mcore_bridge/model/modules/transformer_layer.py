@@ -234,7 +234,7 @@ class CustomTransformerLayer(TransformerLayer):
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
                 logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
-        self.mlp = build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
 
     def forward(self, *args, **kwargs):
         """
