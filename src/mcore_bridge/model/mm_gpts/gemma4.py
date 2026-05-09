@@ -89,8 +89,6 @@ class Gemma4SelfAttention(SelfAttention):
             if self.use_alternative_attention else text_config.num_key_value_heads)
         self.num_key_value_groups = text_config.num_attention_heads // num_key_value_heads
 
-        self.is_causal = getattr(text_config, 'use_bidirectional_attention', None) != 'all'
-
         # Shared KV across the trailing layers
         num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
         first_kv_shared_layer_idx = text_config.num_hidden_layers - num_kv_shared_layers
