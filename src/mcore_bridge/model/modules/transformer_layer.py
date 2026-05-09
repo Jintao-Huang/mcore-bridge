@@ -1,11 +1,14 @@
 import enum
 import inspect
 import torch
+from megatron.core.extensions.transformer_engine import TEFusedMLP
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
                                                     scatter_to_sequence_parallel_region)
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
+from megatron.core.transformer.moe.experts import SequentialMLP, TEGroupedMLP
+from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import (TransformerLayer, TransformerLayerSubmodules,
@@ -126,43 +129,13 @@ class CustomTransformerLayer(TransformerLayer):
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
         )
+
         # [Module 8: MLP block]
-        additional_mlp_kwargs = {}
-        # import here to avoid circular import
-        from megatron.core.extensions.transformer_engine import TEFusedMLP
-        from megatron.core.transformer.moe.experts import SequentialMLP, TEGroupedMLP
-        from megatron.core.transformer.moe.moe_layer import MoELayer
-
-        from mcore_bridge.model.gpts.glm4 import Glm4MLP
-        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP
-
-        # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
-        # We can change MLP to accept pg_collection but it makes the logic implicit
-        # The conditional below is to make the logic explicit
-        # if submodules.mlp is not a ModuleSpec,we dont have to handle passing additional kwargs
-        if isinstance(submodules.mlp, ModuleSpec):
-            if submodules.mlp.module in (MoELayer, TEGroupedMLP, SequentialMLP):
-                additional_mlp_kwargs['pg_collection'] = pg_collection
-                # Pass is_mtp_layer flag to MoELayer to distinguish MTP MoE layers.
-                if submodules.mlp.module == MoELayer and 'is_mtp_layer' in inspect.signature(MoELayer).parameters:
-                    additional_mlp_kwargs['is_mtp_layer'] = self.is_mtp_layer
-            elif submodules.mlp.module in (MLP, Glm4MLP):
-                assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
-                additional_mlp_kwargs['tp_group'] = pg_collection.tp
-            elif submodules.mlp.module == Gemma4MLP:
-                additional_mlp_kwargs['layer_number'] = layer_number
-            elif TEFusedMLP is not None and submodules.mlp.module == TEFusedMLP:
-                assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
-                additional_mlp_kwargs['tp_group'] = pg_collection.tp
-            else:
-                logger.warning_once(f'Unknown MLP type: {submodules.mlp.module}. Using default kwargs.')
-        self.mlp = build_module(submodules.mlp, config=self.config, **additional_mlp_kwargs)
+        self.mlp = self._build_mlp(submodules.mlp)
         if hasattr(self.mlp, 'set_layer_number'):
             self.mlp.set_layer_number(self.layer_number)
-
         # [Module 9: BiasDropoutFusion]
         self.mlp_bda = build_module(submodules.mlp_bda)
-
         self.is_moe_layer = isinstance(self.mlp, MoELayer)
 
         self.recompute_input_layernorm = False
@@ -233,6 +206,35 @@ class CustomTransformerLayer(TransformerLayer):
         # use_nvfuser = TORCH_MAJOR > 1 or (TORCH_MAJOR == 1 and TORCH_MINOR >= 10)
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
+
+    def _build_mlp(self, mlp_spec):
+        pg_collection = self.pg_collection
+        additional_mlp_kwargs = {}
+        # import here to avoid circular import
+        from mcore_bridge.model.gpts.glm4 import Glm4MLP
+        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP
+
+        # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
+        # We can change MLP to accept pg_collection but it makes the logic implicit
+        # The conditional below is to make the logic explicit
+        # if smlp_spec is not a ModuleSpec,we dont have to handle passing additional kwargs
+        if isinstance(mlp_spec, ModuleSpec):
+            if mlp_spec.module in (MoELayer, TEGroupedMLP, SequentialMLP):
+                additional_mlp_kwargs['pg_collection'] = pg_collection
+                # Pass is_mtp_layer flag to MoELayer to distinguish MTP MoE layers.
+                if mlp_spec.module == MoELayer and 'is_mtp_layer' in inspect.signature(MoELayer).parameters:
+                    additional_mlp_kwargs['is_mtp_layer'] = self.is_mtp_layer
+            elif mlp_spec.module in (MLP, Glm4MLP):
+                assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
+                additional_mlp_kwargs['tp_group'] = pg_collection.tp
+            elif mlp_spec.module == Gemma4MLP:
+                additional_mlp_kwargs['layer_number'] = self.layer_number
+            elif TEFusedMLP is not None and mlp_spec.module == TEFusedMLP:
+                assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
+                additional_mlp_kwargs['tp_group'] = pg_collection.tp
+            else:
+                logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
+        self.mlp = build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
 
     def forward(self, *args, **kwargs):
         """
