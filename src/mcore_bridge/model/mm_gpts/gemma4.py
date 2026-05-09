@@ -1,7 +1,9 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
+import torch
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
+from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
 from transformers import AutoModel, PretrainedConfig
 from typing import Optional
@@ -16,6 +18,20 @@ from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
 from ..module import CustomTransformerLayer
+
+
+class Gemma4VNorm(torch.nn.Module):
+    """RMSNorm without learnable scale, mirroring HF `Gemma4RMSNorm(with_scale=False)`."""
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return (x * torch.rsqrt(variance + self.eps)).to(orig_dtype)
 
 
 class Gemma4Vit(HuggingFaceVit):
@@ -92,16 +108,28 @@ class Gemma4SelfAttention(SelfAttention):
                 self.layer_type in prev_layers
                 and layer_idx == len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
 
-        # Patch config so the underlying linear_qkv is built with the correct shapes
+        # Patch config so the underlying linear_qkv/q_layernorm/k_layernorm are built correctly.
+        # HF keeps `q_norm` on every layer, but only builds `k_norm`/`v_norm` on non-kv-shared
+        # layers, so replace `k_layernorm` with `IdentityOp` when this layer shares KV.
         orig_kv_channels = config.kv_channels
         orig_num_query_groups = config.num_query_groups
+        orig_k_layernorm = submodules.k_layernorm
         config.kv_channels = self.head_dim
         config.num_query_groups = num_key_value_heads
+        if self.is_kv_shared_layer:
+            submodules.k_layernorm = IdentityOp
         try:
             super().__init__(config, submodules, layer_number, *args, **kwargs)
         finally:
             config.kv_channels = orig_kv_channels
             config.num_query_groups = orig_num_query_groups
+            submodules.k_layernorm = orig_k_layernorm
+
+        # HF builds a `v_norm` (RMSNorm without learnable scale) for non-kv-shared layers.
+        # mcore's SelfAttention has no v_layernorm by default, so attach one explicitly here.
+        self.v_norm = (
+            Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon)
+            if not self.is_kv_shared_layer else None)
 
 
 class Gemma4MLP(MLP):
