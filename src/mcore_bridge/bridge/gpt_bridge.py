@@ -1595,8 +1595,8 @@ class GPTBridge:
             hf_state_dict.update(
                 self._set_moe_state(
                     mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore, is_mtp=is_mtp))
-            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict, f'{self.hf_post_attention_layernorm}.weight',
-                                 to_mcore)
+            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict,
+                                 f'{self.hf_post_attention_layernorm}.weight', to_mcore)
         else:
             hf_state_dict.update(
                 self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
@@ -1618,13 +1618,16 @@ class GPTBridge:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
+    def _set_word_embeddings(self, mg_model, hf_state_dict, to_mcore):
+        lm_model = getattr(mg_model, 'language_model') if self.is_multimodal else mg_model
+        self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, self.hf_embed_key, to_mcore)
+
     def _convert_pre_process(self, mg_model, hf_state_dict, hf_prefix: str, to_mcore):
         if to_mcore:
             hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
         else:
             hf_state_dict = {}
-        lm_model = getattr(mg_model, 'language_model') if self.is_multimodal else mg_model
-        self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, self.hf_embed_key, to_mcore)
+        self._set_word_embeddings(mg_model, hf_state_dict, to_mcore)
         if self.is_multimodal:
             for prefix, mg_prefix in self.module_mapping.items():
                 mg_module = deep_getattr(mg_model, f'visual.{mg_prefix}')
