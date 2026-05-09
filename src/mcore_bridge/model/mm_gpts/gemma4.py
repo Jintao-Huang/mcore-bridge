@@ -53,14 +53,55 @@ class Gemma4SelfAttention(SelfAttention):
         **kwargs,
     ):
         text_config = config.hf_config.text_config
-        self.is_sliding = text_config.layer_types[layer_number - 1] == 'sliding_attention'
+        layer_idx = layer_number - 1
+
+        # Layer type / sliding attention
+        self.layer_type = text_config.layer_types[layer_idx]
+        self.is_sliding = self.layer_type == 'sliding_attention'
         self.sliding_window = text_config.sliding_window if self.is_sliding else None
-        kv_channels = config.kv_channels
-        config.kv_channels = (
+
+        # Head dim: global layers may use a different head dim than sliding ones
+        self.head_dim = (
             text_config.global_head_dim
             if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
-        super().__init__(config, submodules, layer_number, *args, **kwargs)
-        config.kv_channels = kv_channels
+
+        # Alternative attention (k == v) for global layers when `attention_k_eq_v` is set
+        self.use_alternative_attention = (
+            getattr(text_config, 'attention_k_eq_v', False) and not self.is_sliding)
+        num_key_value_heads = (
+            text_config.num_global_key_value_heads
+            if self.use_alternative_attention else text_config.num_key_value_heads)
+        self.num_key_value_groups = text_config.num_attention_heads // num_key_value_heads
+
+        self.is_causal = getattr(text_config, 'use_bidirectional_attention', None) != 'all'
+
+        # Shared KV across the trailing layers
+        num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
+        first_kv_shared_layer_idx = text_config.num_hidden_layers - num_kv_shared_layers
+        self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+        prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
+        if self.is_kv_shared_layer:
+            # For shared layers, reuse KV from the last non-shared layer of the same type
+            self.kv_shared_layer_index = (
+                len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
+            self.store_full_length_kv = False
+        else:
+            self.kv_shared_layer_index = None
+            # Non-shared layers that are the last of their type in `prev_layers` must keep full KV
+            self.store_full_length_kv = (
+                self.layer_type in prev_layers
+                and layer_idx == len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
+
+        # Patch config so the underlying linear_qkv is built with the correct shapes
+        orig_kv_channels = config.kv_channels
+        orig_num_query_groups = config.num_query_groups
+        config.kv_channels = self.head_dim
+        config.num_query_groups = num_key_value_heads
+        try:
+            super().__init__(config, submodules, layer_number, *args, **kwargs)
+        finally:
+            config.kv_channels = orig_kv_channels
+            config.num_query_groups = orig_num_query_groups
 
 
 class Gemma4MLP(MLP):
