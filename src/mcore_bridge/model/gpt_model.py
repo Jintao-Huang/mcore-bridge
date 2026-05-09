@@ -311,7 +311,7 @@ class GPTModel(McoreGPTModel):
         """
 
         inference_context = deprecate_inference_params(inference_context, inference_params)
-
+        # There is a difference in whether rotary_pos_emb can be fused between the decoder and MTP.
         decoder_input, rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
             self._preprocess(
                 input_ids=input_ids,

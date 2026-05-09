@@ -15,6 +15,7 @@ from ..mm_gpt_model import MultimodalGPTModel
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
+from ..module import CustomTransformerLayer
 
 
 class Gemma4Vit(HuggingFaceVit):
@@ -76,9 +77,12 @@ class Gemma4MLP(MLP):
         text_config = config.hf_config.text_config
         self.enable_moe_block = text_config.enable_moe_block
         first_kv_shared_layer_idx = text_config.num_hidden_layers - text_config.num_kv_shared_layers
-        is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
-        use_double_wide_mlp = config.use_double_wide_mlp and is_kv_shared_layer
+        is_kv_shared_layer = layer_number > first_kv_shared_layer_idx > 0
+        use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
+        ffn_hidden_size = config.ffn_hidden_size
+        config.ffn_hidden_size = config.ffn_hidden_size * (2 if use_double_wide_mlp else 1)
         super().__init__(config, submodules, *args, **kwargs)
+        config.ffn_hidden_size = ffn_hidden_size
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
@@ -110,6 +114,9 @@ class Gemma4TextGPTModel(GPTModel):
 
         self.config.rope_scaling = rope_scaling
 
+class Gemma4TransformerLayer(CustomTransformerLayer):
+    pass
+
 
 class Gemma4GPTModel(MultimodalGPTModel):
     language_model_cls = Gemma4TextGPTModel
@@ -126,6 +133,10 @@ class Gemma4Loader(ModelLoader):
             layer_spec.submodules.mlp.module = Gemma4MLP
         return layer_specs
 
+
+    def _set_custom_layer(self, transformer_layer_spec):
+        for layer_spec in transformer_layer_spec.layer_specs:
+            layer_spec.module = Gemma4TransformerLayer
 
 register_model(
     ModelMeta(

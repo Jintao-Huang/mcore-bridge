@@ -112,6 +112,10 @@ def test_llava_onevision1_5():
     _test_model('lmms-lab/LLaVA-OneVision-1.5-4B-Instruct')
 
 
+def test_gemma4():
+    _test_model('google/gemma-4-E2B-it')
+
+
 if __name__ == '__main__':
     # test_qwen2_5_vl()
     # test_qwen2_vl()
@@ -131,4 +135,5 @@ if __name__ == '__main__':
     # test_qwen3_omni()
     # test_llama4()
     # test_qwen3_5()
-    test_llava_onevision1_5()
+    # test_llava_onevision1_5()
+    test_gemma4()
