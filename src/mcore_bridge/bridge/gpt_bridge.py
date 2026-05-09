@@ -44,8 +44,8 @@ class GPTBridge:
     hf_gate_key = 'gate.weight'
     hf_shared_expert_key = None
     hf_expert_bias_key = 'gate.e_score_correction_bias'
-    additional_dim0_keys = {}
-    additional_dim1_keys = {}
+    additional_dim0_keys = set()
+    additional_dim1_keys = set()
 
     def __init__(self, config: ModelConfig):
         self.config = config
