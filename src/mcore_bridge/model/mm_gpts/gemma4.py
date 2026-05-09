@@ -2,6 +2,7 @@
 import copy
 import math
 import torch
+import torch.distributed as dist
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TENorm, TERowParallelLinear
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.tensor_parallel import VocabParallelEmbedding
@@ -49,14 +50,15 @@ class Gemma4Vit(HuggingFaceVit):
     _aligner = ['embed_vision', 'embed_audio']
 
     def prepare_model(self, hf_config: PretrainedConfig):
-        from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder, Gemma4Model
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4Model, Gemma4MultimodalEmbedder
         self.vision_tower = AutoModel.from_config(hf_config.vision_config)
+        dtype = self.vision_tower.dtype
         self.audio_tower = AutoModel.from_config(hf_config.audio_config) if hf_config.audio_config is not None else None
-        self.embed_vision = Gemma4MultimodalEmbedder(hf_config.vision_config, hf_config.text_config)
+        self.embed_vision = Gemma4MultimodalEmbedder(hf_config.vision_config, hf_config.text_config).to(dtype)
         self.embed_audio = (
-            Gemma4MultimodalEmbedder(hf_config.audio_config, hf_config.text_config)
+            Gemma4MultimodalEmbedder(hf_config.audio_config, hf_config.text_config).to(dtype)
             if hf_config.audio_config is not None else None)
-        self.register_buffer("embed_scale", torch.tensor(hf_config.hidden_size**0.5), persistent=False)
+        self.register_buffer('embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(dtype), persistent=False)
         self.model_cls = Gemma4Model
 
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
@@ -75,38 +77,35 @@ class Gemma4Vit(HuggingFaceVit):
         image_mask = input_ids == hf_config.image_token_id
         video_mask = input_ids == hf_config.video_token_id
         audio_mask = input_ids == hf_config.audio_token_id
+        multimodal_mask = image_mask | video_mask | audio_mask
+        llm_input_ids = input_ids.clone()
+        llm_input_ids[multimodal_mask] = hf_config.text_config.pad_token_id
 
         if pixel_values is not None:
-            vision_outputs = self.vision_tower(
-                pixel_values=pixel_values.to(self.vision_tower.dtype),
-                pixel_position_ids=image_position_ids,
-            )
-            image_features = self.embed_vision(inputs_embeds=vision_outputs.last_hidden_state)
+            with self.patch_hf_config():
+                image_features = self.model_cls.get_image_features(
+                    self, pixel_values, image_position_ids, return_dict=True).pooler_output
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             image_mask_e = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask_e, image_features)
 
         if pixel_values_videos is not None:
-            pixel_values_videos_flat = pixel_values_videos.flatten(0, 1)
-            video_position_ids_flat = video_position_ids.flatten(0, 1) if video_position_ids is not None else None
-            vision_outputs = self.vision_tower(
-                pixel_values=pixel_values_videos_flat.to(self.vision_tower.dtype),
-                pixel_position_ids=video_position_ids_flat,
-            )
-            video_features = self.embed_vision(inputs_embeds=vision_outputs.last_hidden_state)
+            with self.patch_hf_config():
+                video_features = self.get_video_features(
+                    pixel_values_videos, video_position_ids, return_dict=True).pooler_output
             video_features = video_features.to(inputs_embeds.device, inputs_embeds.dtype)
             video_mask_e = video_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(video_mask_e, video_features)
 
         if (input_features is not None and input_features_mask is not None and self.audio_tower is not None):
-            audio_outputs = self.audio_tower(input_features, input_features_mask, return_dict=True)
-            audio_features = self.embed_audio(inputs_embeds=audio_outputs.last_hidden_state)
-            audio_features = audio_features[audio_outputs.attention_mask]
+            with self.patch_hf_config():
+                audio_output = self.get_audio_features(input_features, input_features_mask, return_dict=True)
+            audio_features = audio_output.pooler_output
+            audio_features = audio_features[audio_output.attention_mask]
             audio_features = audio_features.to(inputs_embeds.device, inputs_embeds.dtype)
             audio_mask_e = audio_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask_e, audio_features)
-
-        return inputs_embeds
+        return {'inputs_embeds': inputs_embeds, 'llm_input_ids': llm_input_ids}
 
 
 class Gemma4SelfAttention(SelfAttention):
@@ -155,9 +154,6 @@ class Gemma4SelfAttention(SelfAttention):
                 self.layer_type in prev_layers
                 and layer_idx == len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
 
-        # Patch config so the underlying linear_qkv/q_layernorm/k_layernorm are built correctly.
-        # HF keeps `q_norm` on every layer, but only builds `k_norm`/`v_norm` on non-kv-shared
-        # layers, so replace `k_layernorm` with `IdentityOp` when this layer shares KV.
         orig_kv_channels = config.kv_channels
         orig_num_query_groups = config.num_query_groups
         orig_k_layernorm = submodules.k_layernorm
@@ -172,10 +168,6 @@ class Gemma4SelfAttention(SelfAttention):
             config.num_query_groups = orig_num_query_groups
             submodules.k_layernorm = orig_k_layernorm
 
-        # HF kv-shared layers only keep `q_proj` (K/V are reused from an earlier layer), so the
-        # default mcore `linear_qkv` shape `[Q + 2*KV, hidden]` over-allocates. Rebuild it with
-        # out_dim = query_projection_size so shapes match HF `q_proj` 1:1 for weight bridging.
-        # Mirrors attention.py L1275-L1289, minus the `+ 2 * kv_projection_size` term.
         if self.is_kv_shared_layer:
             self.linear_qkv_out_dim = self.query_projection_size
             self.linear_qkv = submodules.linear_qkv(
@@ -191,8 +183,6 @@ class Gemma4SelfAttention(SelfAttention):
                 tp_group=self.pg_collection.tp,
             )
 
-        # HF builds a `v_norm` (RMSNorm without learnable scale) for non-kv-shared layers.
-        # mcore's SelfAttention has no v_layernorm by default, so attach one explicitly here.
         self.v_norm = (
             Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon) if not self.is_kv_shared_layer else None)
 
@@ -236,7 +226,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
         is_kv_shared_layer = False if mg_attn is None else mg_attn.is_kv_shared_layer
         is_kv_shared_layer = torch.tensor([is_kv_shared_layer], dtype=torch.bool, device='cuda')
         if self.pp_size > 1:
-            dist.all_reduce(is_lora, group=self.pp_group, op=dist.ReduceOp.MAX)
+            dist.all_reduce(is_kv_shared_layer, group=self.pp_group, op=dist.ReduceOp.MAX)
         is_kv_shared_layer = is_kv_shared_layer.item()
         if is_kv_shared_layer:
             self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'q_proj.weight', to_mcore)
@@ -257,12 +247,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 'per_layer_projection', 'post_per_layer_input_norm'
         ]:
             self._set_state_dict(
-                mg_layer,
-                f'{key}.weight',
-                hf_state_dict if to_mcore else new_hf_state_dict,
-                f'{key}.weight',
-                to_mcore,
-                _check_mg_param=False)
+                mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore, _check_mg_param=False)
         if to_mcore:
             hf_state_dict = {}
         else:
@@ -281,29 +266,18 @@ class Gemma4TextGPTModel(GPTModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.pad_embedding = self.embedding.word_embeddings.weight
         text_config = self.config.hf_config.text_config
-        # HF: `self.unique_layer_types = set(self.config.layer_types)` — needed by the rotary
-        # embedding selection logic (sliding vs global) when that path is wired up.
+        self.text_config = text_config
         self.unique_layer_types = set(text_config.layer_types)
 
-        # HF: Per-Layer Embeddings (PLE). Only populated on the pre-process (PP stage 0) side,
-        # since the auxiliary signal is derived from `input_ids` / the token embedding output.
-        # See `modeling_gemma4.py` L1574-L1592 for the reference construction. Built with
-        # megatron-native parallel modules (mirroring `LanguageModelEmbedding` at
-        # `gpt_model.py` L150-L157) so the aux signal follows the TP/SP layout of the
-        # primary embedding.
         self.hidden_size_per_layer_input = getattr(text_config, 'hidden_size_per_layer_input', None)
         if self.hidden_size_per_layer_input and self.pre_process:
             num_layers = text_config.num_hidden_layers
             hidden_size = text_config.hidden_size
             total_dim = num_layers * self.hidden_size_per_layer_input
             tp_size = self.config.tensor_model_parallel_size
-            # Pad aux vocab size to be TP-divisible, matching how `GPTModel` pads the main
-            # `padded_vocab_size` before feeding it into `VocabParallelEmbedding`.
             padded_vocab_size_per_layer = math.ceil(text_config.vocab_size_per_layer_input / tp_size) * tp_size
-            # Vocab-parallel embedding (shard on vocab dim). HF's `Gemma4TextScaledWordEmbedding`
-            # applies an `embed_scale = hidden_size_per_layer_input**0.5` factor on forward;
-            # we capture the scale as a sibling attribute so the weight shape stays 1:1 with HF.
             self.embed_tokens_per_layer = VocabParallelEmbedding(
                 num_embeddings=padded_vocab_size_per_layer,
                 embedding_dim=total_dim,
@@ -313,9 +287,6 @@ class Gemma4TextGPTModel(GPTModel):
             )
             self.embed_tokens_per_layer_scale = self.hidden_size_per_layer_input**0.5
             self.per_layer_input_scale = 2.0**-0.5
-            # Column-parallel projection: output dim `num_layers * hidden_size_per_layer_input`
-            # is split across TP ranks so each rank produces its own shard of the packed
-            # per-layer input tensor.
             self.per_layer_model_projection = build_module(
                 TEColumnParallelLinear,
                 hidden_size,
@@ -356,8 +327,18 @@ class Gemma4TextGPTModel(GPTModel):
 
         self.config.rope_scaling = rope_scaling
 
-    def forward(self):
-        pass
+    def forward(self, *args, **kwargs):
+        extra_block_kwargs = kwargs.pop('extra_block_kwargs', None) or {}
+        llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
+        if self.hidden_size_per_layer_input and self.pre_process:
+            per_layer_inputs = (self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale).reshape(
+                *llm_input_ids.shape,
+                self.text_config.num_hidden_layers,
+                self.hidden_size_per_layer_input,
+            )
+        extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
+        kwargs['extra_block_kwargs'] = extra_block_kwargs
+        return super().forward(*args, **kwargs)
 
 
 class Gemma4TransformerLayer(CustomTransformerLayer):
@@ -368,22 +349,15 @@ class Gemma4TransformerLayer(CustomTransformerLayer):
         hidden_size = self.config.hidden_size
         eps = self.config.layernorm_epsilon
 
-        # HF keeps an extra layernorm after self-attn / feedforward (before the residual add).
-        # mcore's TransformerLayer does not include these, so attach them here.
         self.post_attention_layernorm = build_module(TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
         self.post_feedforward_layernorm = build_module(TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
-        # HF: `self.register_buffer("layer_scalar", torch.ones(1))`
         self.register_buffer('layer_scalar', torch.ones(1))
 
-        # HF: per-layer input projection branch, only when `hidden_size_per_layer_input` is set.
         self.hidden_size_per_layer_input = getattr(text_config, 'hidden_size_per_layer_input', None)
         if self.hidden_size_per_layer_input:
             from transformers.activations import ACT2FN
             self.act_fn = ACT2FN[text_config.hidden_activation]
-            # Megatron-style parallel linears (see attention.py L348-361 for `linear_proj`):
-            # `per_layer_input_gate` is column-parallel (output dim split across TP), then its
-            # output is consumed by the row-parallel `per_layer_projection` which gathers along TP.
             self.per_layer_input_gate = build_module(
                 TEColumnParallelLinear,
                 hidden_size,
@@ -412,9 +386,6 @@ class Gemma4TransformerLayer(CustomTransformerLayer):
             )
             self.post_per_layer_input_norm = build_module(TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
-        # HF: extra layernorms when the layer runs a MoE block in parallel with the dense MLP.
-        # Router / experts modules are gemma4-specific and intentionally skipped here; they can
-        # be wired by the bridge/forward override once their mcore counterparts are implemented.
         self.enable_moe_block = getattr(text_config, 'enable_moe_block', False)
         if self.enable_moe_block:
             self.post_feedforward_layernorm_1 = build_module(
