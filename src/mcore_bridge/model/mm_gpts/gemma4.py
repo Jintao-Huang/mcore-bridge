@@ -15,7 +15,7 @@ from ..mm_gpt_model import MultimodalGPTModel
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
-from ..module import CustomTransformerLayer
+from ..modules import CustomTransformerLayer
 
 
 class Gemma4Vit(HuggingFaceVit):
