@@ -122,8 +122,10 @@ class Gemma4MLP(MLP):
         use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
         ffn_hidden_size = config.ffn_hidden_size
         config.ffn_hidden_size = config.ffn_hidden_size * (2 if use_double_wide_mlp else 1)
-        super().__init__(config, submodules, *args, **kwargs)
-        config.ffn_hidden_size = ffn_hidden_size
+        try:
+            super().__init__(config, submodules, *args, **kwargs)
+        finally:
+            config.ffn_hidden_size = ffn_hidden_size
 
 
 class Gemma4Bridge(MultimodalGPTBridge):

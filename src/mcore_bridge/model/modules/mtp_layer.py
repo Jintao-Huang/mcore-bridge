@@ -29,11 +29,14 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         if config.fp8_param:
             eh_proj = submodules.eh_proj
             submodules.eh_proj = IdentityOp
-        super().__init__(config, submodules, *args, **kwargs)
+        try:
+            super().__init__(config, submodules, *args, **kwargs)
+        finally:
+            if config.fp8_param:
+                submodules.eh_proj = eh_proj
         self.tp_group = getattr(self, 'tp_group', None)
         if not config.fp8_param:
             return
-        submodules.eh_proj = eh_proj
         fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
         with fp8_context:
             self.eh_proj = build_module(

@@ -27,9 +27,11 @@ class MinimaxM2SelfAttention(SelfAttention):
         k_layernorm = submodules.k_layernorm
         submodules.q_layernorm = IdentityOp
         submodules.k_layernorm = IdentityOp
-        super().__init__(config, submodules, *args, **kwargs)
-        submodules.q_layernorm = q_layernorm
-        submodules.k_layernorm = k_layernorm
+        try:
+            super().__init__(config, submodules, *args, **kwargs)
+        finally:
+            submodules.q_layernorm = q_layernorm
+            submodules.k_layernorm = k_layernorm
         self.q_norm = build_module(
             submodules.q_layernorm,
             hidden_size=self.hidden_size_per_attention_head * config.num_attention_heads,
