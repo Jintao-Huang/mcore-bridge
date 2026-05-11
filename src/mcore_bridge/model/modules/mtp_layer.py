@@ -1,3 +1,4 @@
+# Copyright (c) ModelScope Contributors. All rights reserved.
 import torch
 import transformer_engine
 from contextlib import nullcontext
