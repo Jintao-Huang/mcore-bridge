@@ -19,6 +19,7 @@ except ImportError:
     apply_module = None
 
 
+# Code borrowed from NVIDIA/Megatron-LM
 class CustomTransformerBlock(TransformerBlock):
 
     def _checkpointed_forward(
@@ -34,6 +35,7 @@ class CustomTransformerBlock(TransformerBlock):
         padding_mask: Optional[torch.Tensor] = None,
         extract_layer_indices: Optional[Set[int]] = None,
         layer_offset: int = 0,
+        **kwargs,
     ):
         """Forward method with activation checkpointing.
 
@@ -62,6 +64,7 @@ class CustomTransformerBlock(TransformerBlock):
                 context_mask,
                 rotary_pos_emb,
                 padding_mask=None,
+                **kwargs,
             ):
                 for index in range(start, end):
                     layer = self._get_layer(index)
@@ -79,8 +82,9 @@ class CustomTransformerBlock(TransformerBlock):
                         inner_quantization_context = nullcontext()
 
                     with inner_quantization_context:
-                        hidden_states, context = layer(
-                            hidden_states=hidden_states,
+                        hidden_states, context = self._layer_forward(
+                            layer,
+                            hidden_states,
                             attention_mask=attention_mask,
                             context=context,
                             context_mask=context_mask,
@@ -89,6 +93,7 @@ class CustomTransformerBlock(TransformerBlock):
                             inference_context=None,
                             packed_seq_params=packed_seq_params,
                             padding_mask=padding_mask,
+                            **kwargs,
                         )
                 return hidden_states, context
 
@@ -109,6 +114,7 @@ class CustomTransformerBlock(TransformerBlock):
                     context_mask,
                     rotary_pos_emb,
                     padding_mask,
+                    **kwargs,
                 )
             else:
                 return tensor_parallel.checkpoint(
@@ -120,6 +126,7 @@ class CustomTransformerBlock(TransformerBlock):
                     context_mask,
                     rotary_pos_emb,
                     padding_mask,
+                    **kwargs,
                 )
 
         if self.config.recompute_method == 'uniform':
@@ -159,7 +166,7 @@ class CustomTransformerBlock(TransformerBlock):
                     hidden_states, context = checkpoint_handler(custom(layer_idx, layer_idx + 1))
                 else:
                     hidden_states, context = custom(layer_idx, layer_idx + 1)(hidden_states, attention_mask, context,
-                                                                              context_mask, rotary_pos_emb)
+                                                                              context_mask, rotary_pos_emb, **kwargs)
 
                 # Feature extraction: collect hidden states at specified global layer indices
                 if (layer_idx + layer_offset) in extract_layer_indices:
@@ -172,6 +179,19 @@ class CustomTransformerBlock(TransformerBlock):
             return hidden_states, intermediate_hidden_states
 
         return hidden_states
+
+    def _layer_forward(self, layer, hidden_states, **kwargs):
+        deepstack_visual_embeds = kwargs.pop('deepstack_visual_embeds', None)
+        visual_pos_masks = kwargs.pop('visual_pos_masks', None)
+        hidden_states, context = layer(hidden_states=hidden_states, **kwargs)
+        layer_number = layer.layer_number - 1
+        if deepstack_visual_embeds is not None and layer_number in range(len(deepstack_visual_embeds)):
+            hidden_states = self._deepstack_process(
+                hidden_states,
+                visual_pos_masks,
+                deepstack_visual_embeds[layer_number],
+            )
+        return hidden_states, context
 
     def forward(
         self,
@@ -192,6 +212,7 @@ class CustomTransformerBlock(TransformerBlock):
         *,
         inference_params: Optional[BaseInferenceContext] = None,
         dynamic_inference_decode_only: Optional[bool] = None,
+        **kwargs,
     ):
         """
         Perform the forward pass through the transformer block.
@@ -321,6 +342,7 @@ class CustomTransformerBlock(TransformerBlock):
                     padding_mask=padding_mask,
                     extract_layer_indices=extract_layer_indices,
                     layer_offset=layer_offset,
+                    **kwargs,
                 )
                 # Handle return value from _checkpointed_forward
                 if len(extract_layer_indices) > 0:
@@ -343,8 +365,9 @@ class CustomTransformerBlock(TransformerBlock):
                         inner_quantization_context = nullcontext()
 
                     with self.offload_context, inner_quantization_context:
-                        hidden_states, context = layer(
-                            hidden_states=hidden_states,
+                        hidden_states, context = self._layer_forward(
+                            layer,
+                            hidden_states,
                             attention_mask=attention_mask,
                             context=context,
                             context_mask=context_mask,
@@ -357,7 +380,7 @@ class CustomTransformerBlock(TransformerBlock):
                             packed_seq_params=packed_seq_params,
                             sequence_len_offset=sequence_len_offset,
                             padding_mask=padding_mask,
-                        )
+                            **kwargs)
 
                     if (torch.is_grad_enabled() and self.config.cpu_offloading
                             and self.group_prefetch_offload_commit_async is not None):
@@ -369,7 +392,10 @@ class CustomTransformerBlock(TransformerBlock):
 
         # Final layer norm.
         if self.final_layernorm is not None:
-            hidden_states = apply_module(self.final_layernorm)(cast(torch.Tensor, hidden_states))
+            if apply_module is None:
+                hidden_states = self.final_layernorm(hidden_states)
+            else:
+                hidden_states = apply_module(self.final_layernorm)(cast(torch.Tensor, hidden_states))
             # TENorm produces a "viewed" tensor. This will result in schedule.py's
             # deallocate_output_tensor() throwing an error, so a viewless tensor is
             # created to prevent this.
