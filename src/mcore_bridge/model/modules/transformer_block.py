@@ -181,9 +181,6 @@ class CustomTransformerBlock(TransformerBlock):
         return hidden_states
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
-        for key in ['padding_mask']:
-            if kwargs.get(key) is None:
-                kwargs.pop(key, None)
         return layer(hidden_states=hidden_states, **kwargs)
 
     def forward(

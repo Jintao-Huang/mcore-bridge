@@ -241,6 +241,10 @@ class CustomTransformerLayer(TransformerLayer):
         This method calls the core computation of a transformer layer, including
         self-attention, cross-attention (if applicable), and feed-forward operations.
         """
+        # Compatible with megatron-core 0.15
+        for key in ['padding_mask']:
+            if kwargs.get(key) is None:
+                kwargs.pop(key, None)
         hidden_states, context = self._forward_attention(*args, **kwargs)
         # If padding_free is set, attention_mask does not exist.
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
