@@ -20,7 +20,7 @@ from mcore_bridge.config import ModelConfig
 from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..mm_gpt_model import MultimodalGPTModel
-from ..modules import CustomTransformerLayer
+from ..modules import CustomTransformerBlock, CustomTransformerLayer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
@@ -404,13 +404,28 @@ class Gemma4TransformerLayer(CustomTransformerLayer):
             self.pre_feedforward_layernorm_2 = build_module(
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
+    def forward(self, *args, **kwargs):
+        per_layer_input = kwargs.pop('per_layer_input', None)
+        output, context = super().forward(*args, **kwargs)
+        return output, context
+
 
 class Gemma4GPTModel(MultimodalGPTModel):
     language_model_cls = Gemma4TextGPTModel
 
 
+class Gemma4TransformerBlock(CustomTransformerBlock):
+
+    def _layer_forward(self, layer, hidden_states, **kwargs):
+        layer_number = layer.layer_number - 1
+        per_layer_inputs = kwargs.pop('per_layer_inputs', None)
+        kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
+        return super()._layer_forward(layer, hidden_states, **kwargs)
+
+
 class Gemma4Loader(ModelLoader):
     model_cls = Gemma4GPTModel
+    transformer_block = Gemma4TransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         layer_specs = get_gpt_decoder_block_spec(

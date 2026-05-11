@@ -181,17 +181,7 @@ class CustomTransformerBlock(TransformerBlock):
         return hidden_states
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
-        deepstack_visual_embeds = kwargs.pop('deepstack_visual_embeds', None)
-        visual_pos_masks = kwargs.pop('visual_pos_masks', None)
-        hidden_states, context = layer(hidden_states=hidden_states, **kwargs)
-        layer_number = layer.layer_number - 1
-        if deepstack_visual_embeds is not None and layer_number in range(len(deepstack_visual_embeds)):
-            hidden_states = self._deepstack_process(
-                hidden_states,
-                visual_pos_masks,
-                deepstack_visual_embeds[layer_number],
-            )
-        return hidden_states, context
+        return layer(hidden_states=hidden_states, **kwargs)
 
     def forward(
         self,

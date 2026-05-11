@@ -16,7 +16,7 @@ class Qwen3VLTransformerBlock(CustomTransformerBlock):
     def _layer_forward(self, layer, hidden_states, **kwargs):
         deepstack_visual_embeds = kwargs.pop('deepstack_visual_embeds', None)
         visual_pos_masks = kwargs.pop('visual_pos_masks', None)
-        hidden_states, context = layer(hidden_states=hidden_states, **kwargs)
+        hidden_states, context = super()._layer_forward(layer, hidden_states, **kwargs)
         layer_number = layer.layer_number - 1
         if deepstack_visual_embeds is not None and layer_number in range(len(deepstack_visual_embeds)):
             hidden_states = self._deepstack_process(
