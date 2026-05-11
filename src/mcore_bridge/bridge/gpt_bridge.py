@@ -127,11 +127,11 @@ class GPTBridge:
             'linear_kv_up_proj',
             # mtp
             'eh_proj',
-        } & self.additional_dim0_keys
+        } | self.additional_dim0_keys
         if self.config.task_type in {'causal_lm', 'generative_reranker'}:
             dim0_keys.add('output_layer')
         # RowLinear
-        dim1_keys = {'out_proj', 'linear_proj', 'linear_fc2'} & self.additional_dim1_keys
+        dim1_keys = {'out_proj', 'linear_proj', 'linear_fc2'} | self.additional_dim1_keys
         if 'lora_A' not in mg_key and 'lora_B' not in mg_key:
             key, suffix = mg_key.rsplit('.', 2)[-2:]
             if suffix == 'layer_norm_weight':
