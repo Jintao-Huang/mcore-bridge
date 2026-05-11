@@ -210,7 +210,7 @@ class GPTModel(McoreGPTModel):
         if decoder_input is not None and self.training and torch.is_grad_enabled() and not decoder_input.requires_grad:
             # fix LoRA incompatibility with gradient checkpointing
             decoder_input = decoder_input.requires_grad_(True)
-        rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin = self._get_rotary_pos_emb(
+        rotary_pos_emb, rotary_pos_cos, rotary_pos_sin = self._get_rotary_pos_emb(
             decoder_input, position_ids, packed_seq_params=packed_seq_params)
 
         if (in_inference_mode and ((self.config.enable_cuda_graph and self.config.cuda_graph_scope != 'full_iteration')
@@ -231,8 +231,7 @@ class GPTModel(McoreGPTModel):
         if in_inference_mode and not has_config_logger_enabled(self.config):
             decoder_input = WrappedTensor(decoder_input)
 
-        return (decoder_input, rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin,
-                sequence_len_offset)
+        return (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
 
     def _set_inv_freq(self):
         self.attention_scaling = 1.
@@ -274,13 +273,7 @@ class GPTModel(McoreGPTModel):
                         rotary_seq_len,
                         packed_seq=packed_seq,
                     )
-        decoder_rotary_pos_emb = rotary_pos_emb
-        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
-        if self.position_embedding_type == 'rope' and packed_seq and not self.config.apply_rope_fusion:
-            assert position_ids.shape[0] == 1, f'position_ids.shape: {position_ids.shape}'
-            decoder_rotary_pos_emb = rotary_pos_emb[position_ids[0]]
-
-        return rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin
+        return rotary_pos_emb, rotary_pos_cos, rotary_pos_sin
 
     # Code borrowed from NVIDIA/Megatron-LM
     def forward(
@@ -311,7 +304,7 @@ class GPTModel(McoreGPTModel):
 
         inference_context = deprecate_inference_params(inference_context, inference_params)
         # There is a difference in whether rotary_pos_emb can be fused between the decoder and MTP.
-        decoder_input, rotary_pos_emb, decoder_rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
+        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
             self._preprocess(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -319,6 +312,15 @@ class GPTModel(McoreGPTModel):
                 inference_context=inference_context,
                 packed_seq_params=packed_seq_params,
             ))
+        decoder_rotary_pos_emb = rotary_pos_emb
+        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
+        if self.position_embedding_type == 'rope' and packed_seq and not self.config.apply_rope_fusion:
+            assert position_ids.shape[0] == 1, f'position_ids.shape: {position_ids.shape}'
+            if isinstance(rotary_pos_emb, dict):
+                for k, v in rotary_pos_emb.items():
+                    decoder_rotary_pos_emb[k] = v[position_ids[0]]
+            else:
+                decoder_rotary_pos_emb = rotary_pos_emb[position_ids[0]]
 
         mtp_decoder_input = decoder_input
         if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:

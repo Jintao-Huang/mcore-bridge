@@ -4,6 +4,7 @@ import math
 import torch
 import torch.distributed as dist
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TENorm, TERowParallelLinear
+from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.tensor_parallel import VocabParallelEmbedding
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
@@ -266,7 +267,6 @@ class Gemma4TextGPTModel(GPTModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pad_embedding = self.embedding.word_embeddings.weight
         text_config = self.config.hf_config.text_config
         self.text_config = text_config
         self.unique_layer_types = set(text_config.layer_types)
@@ -307,6 +307,15 @@ class Gemma4TextGPTModel(GPTModel):
                 config=self.config,
                 eps=self.config.layernorm_epsilon,
             )
+
+    def _get_rotary_pos_emb(self, decoder_input, position_ids, packed_seq_params, inference_context=None):
+        rotary_seq_len = RotaryEmbedding.get_rotary_seq_len(self, inference_context, self.decoder, decoder_input,
+                                                            self.config, packed_seq_params)
+        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
+        rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
+        full_rotary_pos_emb = self.full_rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
+        rotary_pos_emb = {'sliding_attention': rotary_pos_emb, 'full_attention': full_rotary_pos_emb}
+        return rotary_pos_emb, None, None
 
     def _set_inv_freq(self):
         rope_scaling = self.config.rope_scaling
