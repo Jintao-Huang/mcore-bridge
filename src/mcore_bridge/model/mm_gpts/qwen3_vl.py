@@ -427,16 +427,7 @@ class Qwen3VL_Vit(HuggingFaceVit):
 
 
 class Qwen3VLLoader(ModelLoader):
-
-    def _patch_transformer_block(self):
-        if hasattr(gpt_model, 'OriginTransformerBlock'):
-            return
-        gpt_model.OriginTransformerBlock = gpt_model.TransformerBlock
-        gpt_model.TransformerBlock = Qwen3VLTransformerBlock
-
-    def __init__(self, config):
-        super().__init__(config)
-        self._patch_transformer_block()
+    transformer_block = Qwen3VLTransformerBlock
 
 
 register_model(

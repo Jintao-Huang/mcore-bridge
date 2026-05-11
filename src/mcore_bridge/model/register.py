@@ -1,9 +1,11 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import megatron.core
+from contextlib import contextmanager
 from dataclasses import dataclass
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.extensions.transformer_engine import TEGroupedLinear, TELayerNormColumnParallelLinear, TELinear
+from megatron.core.models.gpt import gpt_model
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec, get_gpt_mtp_block_spec
 from packaging import version
 from torch import nn
@@ -13,7 +15,7 @@ from mcore_bridge.bridge import GPTBridge
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.utils import get_logger
 
-from .modules import CustomTransformerLayer, MultiTokenPredictionLayer
+from .modules import CustomTransformerBlock, CustomTransformerLayer, MultiTokenPredictionLayer
 
 if TYPE_CHECKING:
     from .gpt_model import GPTModel
@@ -66,6 +68,7 @@ def get_model_meta(mcore_model_type: str) -> ModelMeta:
 
 class ModelLoader:
     model_cls = None
+    transformer_block = CustomTransformerBlock
 
     def __init__(self, config: ModelConfig):
         from mcore_bridge.model import GPTModel, MultimodalGPTModel
@@ -131,16 +134,26 @@ class ModelLoader:
         mtp_block_spec = None
         if self.config.mtp_num_layers is not None:
             mtp_block_spec = self.get_mtp_block_spec(transformer_layer_spec, vp_stage=vp_stage)
-        model = self.model_cls(
-            config=self.config,
-            transformer_layer_spec=transformer_layer_spec,
-            pre_process=pre_process,
-            post_process=post_process,
-            mtp_block_spec=mtp_block_spec,
-            vp_stage=vp_stage,
-        )
+        with self._patch_transformer_block():
+            model = self.model_cls(
+                config=self.config,
+                transformer_layer_spec=transformer_layer_spec,
+                pre_process=pre_process,
+                post_process=post_process,
+                mtp_block_spec=mtp_block_spec,
+                vp_stage=vp_stage,
+            )
         self._set_linear_is_expert(model)
         return model
+
+    @contextmanager
+    def _patch_transformer_block(self):
+        TransformerBlock = gpt_model.TransformerBlock
+        gpt_model.TransformerBlock = self.transformer_block
+        try:
+            yield
+        finally:
+            gpt_model.TransformerBlock = TransformerBlock
 
     def _set_linear_is_expert(self, model):
         for n, module in model.named_modules():
