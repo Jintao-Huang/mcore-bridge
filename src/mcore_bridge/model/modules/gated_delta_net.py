@@ -96,10 +96,13 @@ class GatedDeltaNet(_GatedDeltaNet):
             submodules.in_proj = IdentityOp
         if 'cp_comm_type' not in inspect.signature(_GatedDeltaNet).parameters:
             kwargs.pop('cp_comm_type', None)
-        super().__init__(config, submodules, *args, **kwargs)
+        try:
+            super().__init__(config, submodules, *args, **kwargs)
+        finally:
+            if config.linear_decoupled_in_proj:
+                submodules.in_proj = in_proj
         if not config.linear_decoupled_in_proj:
             return
-        submodules.in_proj = in_proj
         self.in_proj_qkvz_dim = self.qk_dim * 2 + self.v_dim * 2
         self.in_proj_ba_dim = self.num_value_heads * 2
         del self.in_proj
