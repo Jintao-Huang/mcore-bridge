@@ -95,7 +95,10 @@ def _convert_config(config, _internal_call=False) -> Dict[str, Any]:
                 break
     for key in ['text_config', 'llm_config', 'thinker_config']:
         if hasattr(config, key):
+            # fix Qwen/Qwen3-VL-30B-A3B-Thinking
+            untie_embeddings_and_output_weights = megatron_config.get('untie_embeddings_and_output_weights')
             megatron_config.update(_convert_config(getattr(config, key), _internal_call=True))
+            megatron_config['untie_embeddings_and_output_weights'] = untie_embeddings_and_output_weights
     # compat llama3
     if getattr(config, 'rope_scaling', None) is not None:
         if isinstance(config.rope_scaling, int):
