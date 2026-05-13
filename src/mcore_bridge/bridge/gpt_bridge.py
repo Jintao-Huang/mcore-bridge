@@ -939,7 +939,7 @@ class GPTBridge:
                 dist.all_reduce(is_lora, group=self.pp_group)
             if is_lora:
                 if hf_grouped:
-                    logger.warning(
+                    logger.warning_once(
                         'Since this model\'s transformers and megatron have different expert weight organization '
                         'methods, LoRA weights may not be available for inference. It is recommended to set `--merge_lora true.`'
                         'You can also manually merge LoRA weights using the `megatron export` command.')
@@ -1168,7 +1168,7 @@ class GPTBridge:
                     dist.all_reduce(is_lora, group=self.pp_group)
                 if is_lora:
                     if hf_grouped:
-                        logger.warning(
+                        logger.warning_once(
                             'Since this model\'s transformers and megatron have different expert weight organization '
                             'methods, LoRA weights may not be available for inference. It is recommended to set `--merge_lora true.`'
                             'You can also manually merge LoRA weights using the `megatron export` command.')
