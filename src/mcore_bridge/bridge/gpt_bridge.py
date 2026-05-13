@@ -941,8 +941,9 @@ class GPTBridge:
                 if hf_grouped:
                     logger.warning_once(
                         'Since this model\'s transformers and megatron have different expert weight organization '
-                        'methods, LoRA weights may not be available for inference. It is recommended to set `--merge_lora true.`'
-                        'You can also manually merge LoRA weights using the `megatron export` command.')
+                        'methods, LoRA weights may not be available for inference. It is recommended to set '
+                        '`--merge_lora true`. You can also manually merge LoRA weights using the '
+                        '`megatron export` command.')
                 if mg_mlp is None:
                     lora_A = None
                     lora_B = None
@@ -1170,8 +1171,9 @@ class GPTBridge:
                     if hf_grouped:
                         logger.warning_once(
                             'Since this model\'s transformers and megatron have different expert weight organization '
-                            'methods, LoRA weights may not be available for inference. It is recommended to set `--merge_lora true.`'
-                            'You can also manually merge LoRA weights using the `megatron export` command.')
+                            'methods, LoRA weights may not be available for inference. It is recommended to set '
+                            '`--merge_lora true`. You can also manually merge LoRA weights using the '
+                            '`megatron export` command.')
                     if mg_mlp is None:
                         lora_A = None
                         lora_B = None
