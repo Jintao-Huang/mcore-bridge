@@ -321,7 +321,10 @@ class ModelConfig(TransformerConfig):
             self.mcore_model_type = get_mcore_model_type(self.hf_model_type)
         self.model_meta = get_model_meta(self.mcore_model_type)
         self.is_multimodal = self.model_meta.visual_cls is not None
-        self.support_multimodal = self.is_multimodal and getattr(self.model_meta.visual_cls, 'support_multimodal', True)
+        if self.is_multimodal:
+            self.test_mm_type = getattr(self.model_meta.visual_cls, 'test_mm_type', 'image')
+        else:
+            self.test_mm_type = 'text'
         if self.is_multimodal and self.hf_config is None:
             raise ValueError('Multimodal model must specify hf_config.')
         self.is_moe_model = self.num_moe_experts is not None

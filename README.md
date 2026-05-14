@@ -81,7 +81,7 @@ The following is the list of models supported by MCore-Bridge:
 
 | Series     | model_type                                                   |
 | -------- | ------------------------------------------------------------ |
-| Qwen     | qwen2, qwen2_moe<br />qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3, qwen3_moe<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe<br />qwen3_next, qwen3_5, qwen3_5_moe |
+| Qwen     | qwen2, qwen2_moe<br />qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3, qwen3_moe<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_next, qwen3_5, qwen3_5_moe |
 | DeepSeek | deepseek_v3, deepseek_v32                                    |
 | GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm4v, glm4v_moe, <br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |

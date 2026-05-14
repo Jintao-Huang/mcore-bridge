@@ -19,6 +19,7 @@ class MLLMModelType:
     qwen3_vl = 'qwen3_vl'
     qwen2_5_omni = 'qwen2_5_omni'
     qwen3_omni = 'qwen3_omni'
+    qwen3_asr = 'qwen3_asr'
     qwen3_5 = 'qwen3_5'
     ovis2_5 = 'ovis2_5'
 
