@@ -294,7 +294,7 @@ class GPTModel(McoreGPTModel):
             runtime_gather_output (bool): Gather output at runtime. Default None means
                 `parallel_output` arg in the constructor will be used.
         """
-        if self.config.position_embedding_type == 'mrope' and position_ids.ndim == 2:
+        if self.config.position_embedding_type == 'mrope' and position_ids.ndim == 2:  # qwen3_asr
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
