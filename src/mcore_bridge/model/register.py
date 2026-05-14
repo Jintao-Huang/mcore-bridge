@@ -15,7 +15,7 @@ from mcore_bridge.bridge import GPTBridge
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.utils import get_logger
 
-from .modules import CustomTransformerBlock, CustomTransformerLayer, MultiTokenPredictionLayer
+from .modules import MultiTokenPredictionLayer, TransformerBlock, TransformerLayer
 
 if TYPE_CHECKING:
     from .gpt_model import GPTModel
@@ -68,7 +68,7 @@ def get_model_meta(mcore_model_type: str) -> ModelMeta:
 
 class ModelLoader:
     model_cls = None
-    transformer_block = CustomTransformerBlock
+    transformer_block = TransformerBlock
 
     def __init__(self, config: ModelConfig):
         from mcore_bridge.model import GPTModel, MultimodalGPTModel
@@ -120,7 +120,7 @@ class ModelLoader:
 
     def _set_custom_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
-            layer_spec.module = CustomTransformerLayer
+            layer_spec.module = TransformerLayer
 
     def build_model(
         self,

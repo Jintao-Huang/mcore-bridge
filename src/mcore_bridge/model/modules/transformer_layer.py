@@ -12,8 +12,8 @@ from megatron.core.transformer.moe.experts import SequentialMLP, TEGroupedMLP
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.transformer_layer import (TransformerLayer, TransformerLayerSubmodules,
-                                                         get_transformer_layer_offset)
+from megatron.core.transformer.transformer_layer import TransformerLayer as McoreTransformerLayer
+from megatron.core.transformer.transformer_layer import TransformerLayerSubmodules, get_transformer_layer_offset
 from megatron.core.utils import get_pg_rank
 from typing import Optional
 
@@ -38,7 +38,7 @@ except ImportError:
 logger = get_logger()
 
 
-class CustomTransformerLayer(TransformerLayer):
+class TransformerLayer(McoreTransformerLayer):
 
     def __init__(
         self,
@@ -53,7 +53,7 @@ class CustomTransformerLayer(TransformerLayer):
         pp_layer_offset: Optional[int] = None,
     ):
         self.submodules_config = submodules
-        super(TransformerLayer, self).__init__(config=config, vp_stage=vp_stage)
+        super(McoreTransformerLayer, self).__init__(config=config, vp_stage=vp_stage)
 
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups()

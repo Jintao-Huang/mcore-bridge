@@ -8,7 +8,7 @@ from megatron.core.fp4_utils import get_fp4_context
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.transformer.transformer_block import TransformerBlock
+from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from megatron.core.utils import WrappedTensor, deprecate_inference_params, get_pg_rank, make_viewless_tensor
 from typing import List, Optional, Set, Union, cast
@@ -20,7 +20,7 @@ except ImportError:
 
 
 # Code borrowed from NVIDIA/Megatron-LM
-class CustomTransformerBlock(TransformerBlock):
+class TransformerBlock(McoreTransformerBlock):
 
     def _checkpointed_forward(
         self,
