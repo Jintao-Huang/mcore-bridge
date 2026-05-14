@@ -9,6 +9,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
+from megatron.core.utils import deprecate_inference_params, nvtx_range_pop, nvtx_range_push
 from typing import List, Optional
 
 from mcore_bridge.config import ModelConfig
@@ -170,8 +171,6 @@ class GatedDeltaNet(_GatedDeltaNet):
 
         """
         # TODO: Deal with attention_mask
-        from megatron.core.utils import deprecate_inference_params, nvtx_range_pop, nvtx_range_push
-
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         seq_len, batch, _ = hidden_states.shape

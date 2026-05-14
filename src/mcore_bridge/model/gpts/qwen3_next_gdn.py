@@ -55,13 +55,8 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
                        'Need to ensure QKVZBA\'s lora_A are consistent'
                 qkvz_lora_B = hf_state_dict['in_proj_qkvz.lora_B.weight'].load()
                 ba_lora_B = hf_state_dict['in_proj_ba.lora_B.weight'].load()
-                q_lora_B, k_lora_B, v_lora_B, z_lora_B = torch.split(
-                    qkvz_lora_B, [key_dim * num_key_heads, key_dim * num_key_heads, value_dim * num_key_heads], dim=0)
-                b_lora_B, a_lora_B = torch.split(ba_lora_B, [value_dim // key_dim * num_key_heads] * 2, dim=0)
                 lora_B = torch.cat([
-                    *(x.reshape(num_key_heads, -1, qkvz_lora_B.shape[-1])
-                      for x in [q_lora_B, k_lora_B, v_lora_B, z_lora_B]),
-                    *(x.reshape(num_key_heads, -1, qkvz_lora_B.shape[-1]) for x in [b_lora_B, a_lora_B]),
+                    *(x.reshape(num_key_heads, -1, qkvz_lora_B.shape[-1]) for x in [qkvz_lora_B, ba_lora_B]),
                 ],
                                    dim=1).reshape(-1, qkvz_lora_B.shape[-1])
                 self._set_weight(mg_attn.in_proj.lora_A[self._adapter_name].weight, lora_A, 'in_proj.lora_A.weight')
@@ -69,23 +64,13 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
             elif not self._peft_format:
                 qkvz = hf_state_dict['in_proj_qkvz.weight'].load()
                 ba = hf_state_dict['in_proj_ba.weight'].load()
-                q, k, v, z = torch.split(
-                    qkvz, [
-                        key_dim * num_key_heads, key_dim * num_key_heads, value_dim * num_key_heads,
-                        value_dim * num_key_heads
-                    ],
-                    dim=0)
-                b, a = torch.split(ba, [value_dim // key_dim * num_key_heads] * 2, dim=0)
                 in_proj_weight = torch.cat([
-                    *(x.reshape(num_key_heads, -1, config.hidden_size) for x in [q, k, v, z]),
-                    *(x.reshape(num_key_heads, -1, config.hidden_size) for x in [b, a]),
+                    *(x.reshape(num_key_heads, -1, config.hidden_size) for x in [qkvz, ba]),
                 ],
                                            dim=1).reshape((-1, config.hidden_size))
                 self._set_weight(mg_attn.in_proj.weight, in_proj_weight, 'in_proj.weight')
         else:
-            qkv_dim = key_dim * 2 + value_dim
-            z_dim = value_dim
-            a_dim = config.linear_num_value_heads // num_key_heads
+            qkvz_dim = key_dim * 2 + value_dim * 2
             is_lora = False if mg_attn is None else isinstance(mg_attn.in_proj,
                                                                LoraParallelLinear) and self._peft_format
             is_lora = torch.tensor([is_lora], dtype=torch.bool, device='cuda')
@@ -103,28 +88,23 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
                     self._peft_target_modules.update({'in_proj_qkvz', 'in_proj_ba'})
                     for key in ['in_proj_qkvz', 'in_proj_ba']:
                         hf_state_dict[f'{key}.lora_A.weight'] = lora_A.clone()
-                    q_lora_B = lora_B[:, :key_dim].reshape(-1, lora_B.shape[-1])
-                    k_lora_B = lora_B[:, key_dim:2 * key_dim].reshape(-1, lora_B.shape[-1])
-                    v_lora_B = lora_B[:, 2 * key_dim:qkv_dim].reshape(-1, lora_B.shape[-1])
-                    z_lora_B = lora_B[:, qkv_dim:qkv_dim + z_dim].reshape(-1, lora_B.shape[-1])
-                    b_lora_B = lora_B[:, qkv_dim + z_dim:-a_dim].reshape(-1, lora_B.shape[-1])
-                    a_lora_B = lora_B[:, -a_dim:].reshape(-1, lora_B.shape[-1])
-                    hf_state_dict['in_proj_qkvz.lora_B.weight'] = torch.concat([q_lora_B, k_lora_B, v_lora_B, z_lora_B],
-                                                                               dim=0)
-                    hf_state_dict['in_proj_ba.lora_B.weight'] = torch.concat([b_lora_B, a_lora_B], dim=0)
+                    hf_state_dict['in_proj_qkvz.lora_B.weight'] = lora_B[:, :qkvz_dim].reshape(
+                        -1, lora_B.shape[-1]).clone()
+                    hf_state_dict['in_proj_ba.lora_B.weight'] = lora_B[:, -qkvz_dim:].reshape(-1,
+                                                                                              lora_B.shape[-1]).clone()
             elif not self._peft_format:
                 in_proj_weight, _ = self._get_weight(None if mg_attn is None else mg_attn.in_proj.weight.data,
                                                      'in_proj.weight')
                 if in_proj_weight is not None:
                     in_proj_weight = in_proj_weight.reshape(num_key_heads, -1, config.hidden_size)
-                    q = in_proj_weight[:, :key_dim].reshape(-1, config.hidden_size)
-                    k = in_proj_weight[:, key_dim:2 * key_dim].reshape(-1, config.hidden_size)
-                    v = in_proj_weight[:, 2 * key_dim:qkv_dim].reshape(-1, config.hidden_size)
-                    z = in_proj_weight[:, qkv_dim:(qkv_dim + z_dim)].reshape(-1, config.hidden_size)
-                    b = in_proj_weight[:, (qkv_dim + z_dim):-a_dim].reshape(-1, config.hidden_size)
-                    a = in_proj_weight[:, -a_dim:].reshape(-1, config.hidden_size)
-                    hf_state_dict['in_proj_qkvz.weight'] = torch.concat([q, k, v, z], dim=0)
-                    hf_state_dict['in_proj_ba.weight'] = torch.concat([b, a], dim=0)
+                    hf_state_dict['in_proj_qkvz.weight'] = in_proj_weight[:, :qkvz_dim].reshape(
+                        -1, config.hidden_size).clone()
+                    hf_state_dict['in_proj_ba.weight'] = in_proj_weight[:, -qkvz_dim:].reshape(-1, config.hidden_size)
+        return hf_state_dict
+
+    def _set_linear_decoupled_in_proj(self, mg_attn, hf_state_dict, to_mcore: bool):
+        self._set_state_dict(mg_attn, 'in_proj_qkvz.weight', hf_state_dict, 'in_proj_qkvz.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'in_proj_ba.weight', hf_state_dict, 'in_proj_ba.weight', to_mcore)
         return hf_state_dict
 
 
