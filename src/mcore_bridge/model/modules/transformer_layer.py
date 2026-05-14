@@ -211,6 +211,8 @@ class TransformerLayer(McoreTransformerLayer):
 
     def _build_mlp(self, mlp_spec):
         pg_collection = self.pg_collection
+        if isinstance(mlp_spec, partial):
+            return mlp_spec(config=self.config, pg_collection=pg_collection, is_mtp_layer=self.is_mtp_layer)
         additional_mlp_kwargs = {}
         # import here to avoid circular import
         from mcore_bridge.model.gpts.glm4 import Glm4MLP
@@ -233,14 +235,7 @@ class TransformerLayer(McoreTransformerLayer):
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
                 logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
-        if isinstance(mlp_spec, partial):
-            return mlp_spec(
-                config=self.config,
-                pg_collection=pg_collection,
-                is_mtp_layer=self.is_mtp_layer,
-                **additional_mlp_kwargs)
-        else:
-            return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
 
     def forward(self, *args, **kwargs):
         """
