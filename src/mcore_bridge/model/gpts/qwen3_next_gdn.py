@@ -108,12 +108,8 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
         return hf_state_dict
 
 
-class Qwen3NextGatedDeltaNet(GatedDeltaNet):
-    pass
-
-
 class Qwen3NextLoader(ModelLoader):
-    gated_delta_net = Qwen3NextGatedDeltaNet
+    gated_delta_net = GatedDeltaNet
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import \
