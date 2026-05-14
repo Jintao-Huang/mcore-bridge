@@ -20,7 +20,7 @@ from typing import Optional, Tuple, Union
 
 from mcore_bridge.bridge import GPTBridge
 from mcore_bridge.config import ModelConfig
-from mcore_bridge.utils import get_local_layer_specs, get_logger
+from mcore_bridge.utils import get_env_args, get_local_layer_specs, get_logger
 
 from ..constant import ModelType
 from ..register import ModelLoader, ModelMeta, register_model
@@ -589,9 +589,13 @@ class Qwen3NextLoader(ModelLoader):
         return mtp_block_spec
 
 
-register_model(ModelMeta(
-    ModelType.qwen3_next,
-    ['qwen3_next'],
-    bridge_cls=Qwen3NextBridge,
-    loader=Qwen3NextLoader,
-))
+use_mcore_gdn = get_env_args('USE_MCORE_GDN', bool, True)
+
+if not use_mcore_gdn:
+    register_model(
+        ModelMeta(
+            ModelType.qwen3_next,
+            ['qwen3_next'],
+            bridge_cls=Qwen3NextBridge,
+            loader=Qwen3NextLoader,
+        ))
