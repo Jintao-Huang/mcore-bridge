@@ -90,8 +90,8 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
                         hf_state_dict[f'{key}.lora_A.weight'] = lora_A.clone()
                     hf_state_dict['in_proj_qkvz.lora_B.weight'] = lora_B[:, :qkvz_dim].reshape(
                         -1, lora_B.shape[-1]).clone()
-                    hf_state_dict['in_proj_ba.lora_B.weight'] = lora_B[:, -qkvz_dim:].reshape(-1,
-                                                                                              lora_B.shape[-1]).clone()
+                    hf_state_dict['in_proj_ba.lora_B.weight'] = lora_B[:, qkvz_dim:].reshape(-1,
+                                                                                             lora_B.shape[-1]).clone()
             elif not self._peft_format:
                 in_proj_weight, _ = self._get_weight(None if mg_attn is None else mg_attn.in_proj.weight.data,
                                                      'in_proj.weight')
@@ -99,7 +99,9 @@ class Qwen3NextGDNBridge(Qwen3NextGDNBridgeMixin):
                     in_proj_weight = in_proj_weight.reshape(num_key_heads, -1, config.hidden_size)
                     hf_state_dict['in_proj_qkvz.weight'] = in_proj_weight[:, :qkvz_dim].reshape(
                         -1, config.hidden_size).clone()
-                    hf_state_dict['in_proj_ba.weight'] = in_proj_weight[:, -qkvz_dim:].reshape(-1, config.hidden_size)
+                    hf_state_dict['in_proj_ba.weight'] = in_proj_weight[:,
+                                                                        qkvz_dim:].reshape(-1,
+                                                                                           config.hidden_size).clone()
         return hf_state_dict
 
     def _set_linear_decoupled_in_proj(self, mg_attn, hf_state_dict, to_mcore: bool):
