@@ -2,6 +2,7 @@
 import enum
 import inspect
 import torch
+from functools import partial
 from megatron.core.extensions.transformer_engine import TEFusedMLP
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
@@ -232,7 +233,14 @@ class TransformerLayer(McoreTransformerLayer):
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
                 logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
-        return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        if isinstance(mlp_spec, partial):
+            return mlp_spec(
+                config=self.config,
+                pg_collection=pg_collection,
+                is_mtp_layer=self.is_mtp_layer,
+                **additional_mlp_kwargs)
+        else:
+            return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
 
     def forward(self, *args, **kwargs):
         """
