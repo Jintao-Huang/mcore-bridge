@@ -145,7 +145,7 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         self.is_target_conv_1d_layer = False
 
     def update_layer(self, adapter_name, r, *, lora_alpha, **kwargs):
-        if peft_019:
+        if peft_019 and 'config' in kwargs:
             config = kwargs['config']
             lora_dropout, init_lora_weights, use_rslora, lora_bias = (config.lora_dropout, config.init_lora_weights,
                                                                       config.use_rslora, config.lora_bias)
