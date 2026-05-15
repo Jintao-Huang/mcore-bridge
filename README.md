@@ -70,10 +70,10 @@ You can contact us and communicate with us by adding our group:
 
 **Related Documentation:**
 
-- [Integrating Mcore-Bridge with ms-swift](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Mcore-Bridge.html)
-- [Supported Models List](https://swift.readthedocs.io/zh-cn/latest/Instruction/Supported-models-and-datasets.html)
-- [Custom Megatron Models](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Custom-Model.html)
-- [Qwen3.5 Training Best Practices](https://swift.readthedocs.io/zh-cn/latest/BestPractices/Qwen3_5-Best-Practice.html)
+- [Integrating Mcore-Bridge with ms-swift](https://swift.readthedocs.io/en/latest/Megatron-SWIFT/Mcore-Bridge.html)
+- [Supported Models List](https://swift.readthedocs.io/en/latest/Instruction/Supported-models-and-datasets.html)
+- [Custom Megatron Models](https://swift.readthedocs.io/en/latest/Megatron-SWIFT/Custom-Model.html)
+- [Qwen3.5 Training Best Practices](https://swift.readthedocs.io/en/latest/BestPractices/Qwen3_5-Best-Practice.html)
 
 
 ## 🎉 News
