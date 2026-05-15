@@ -6,7 +6,7 @@ import os
 import torch
 import torch.nn.functional as F
 from collections import OrderedDict
-from megatron.core import parallel_state
+from megatron.core import mpu, parallel_state
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear
@@ -323,7 +323,11 @@ class GPTModel(McoreGPTModel):
             self.set_input_tensor(input_tensor)
         kwargs = {}
         if mcore_016 and attention_mask is not None:
-            kwargs['padding_mask'] = ~((~attention_mask).sum(dim=(1, 2)) > 0)
+            padding_mask = ~((~attention_mask).sum(dim=(1, 2)) > 0)
+            if self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
+                padding_mask = torch.chunk(
+                    padding_mask, self.config.tensor_model_parallel_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
+            kwargs['padding_mask'] = padding_mask
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
