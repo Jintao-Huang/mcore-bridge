@@ -170,7 +170,7 @@ class GatedDeltaNet(_GatedDeltaNet):
             (Tuple[Tensor, Tensor]) GDN output and bias.
 
         """
-        # TODO: Deal with attention_mask
+        # TODO: Deal with attention_mask (There is an issue when left padding is used.)
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         seq_len, batch, _ = hidden_states.shape

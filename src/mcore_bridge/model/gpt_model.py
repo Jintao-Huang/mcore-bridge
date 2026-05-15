@@ -28,6 +28,8 @@ from .rope import dynamic_rope_update, get_rope_inv_freq
 
 logger = get_logger()
 
+mcore_016 = version.parse(megatron.core.__version__) >= version.parse('0.16.0rc0')
+
 
 class OutputLayerLinear(TELinear):
 
@@ -317,6 +319,9 @@ class GPTModel(McoreGPTModel):
             input_tensor = self.get_input_tensor()
             input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
             self.set_input_tensor(input_tensor)
+        kwargs = {}
+        if mcore_016 and attention_mask is not None:
+            kwargs['padding_mask'] = ~((~attention_mask).sum(dim=(1, 2)) > 0)
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
@@ -328,6 +333,7 @@ class GPTModel(McoreGPTModel):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
             **(extra_block_kwargs or {}),
+            **kwargs,
         )
 
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
