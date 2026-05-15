@@ -46,6 +46,7 @@ class GPTBridge:
     hf_expert_bias_key = 'gate.e_score_correction_bias'
     additional_dim0_keys = set()
     additional_dim1_keys = set()
+    _support_hf_grouped_lora = True
 
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -943,9 +944,11 @@ class GPTBridge:
                 dist.all_reduce(is_lora, group=self.pp_group)
             if is_lora:
                 if hf_grouped:
-                    raise ValueError('Since this model\'s transformers and megatron have different expert '
-                                     'weight organization methods, LoRA weight conversion is not supported. '
-                                     'You can solve this issue by setting `--merge_lora true`.')
+                    logger.warning_once(
+                        'Since this model\'s transformers and megatron have different expert weight organization '
+                        'methods, LoRA weights may not be available for inference. It is recommended to set '
+                        '`--merge_lora true`. You can also manually merge LoRA weights using the '
+                        '`megatron export` command.')
                 if mg_mlp is None:
                     lora_A = None
                     lora_B = None
@@ -1171,9 +1174,11 @@ class GPTBridge:
                     dist.all_reduce(is_lora, group=self.pp_group)
                 if is_lora:
                     if hf_grouped:
-                        raise ValueError('Since this model\'s transformers and megatron have different expert '
-                                         'weight organization methods, LoRA weight conversion is not supported. '
-                                         'You can solve this issue by setting `--merge_lora true`.')
+                        logger.warning_once(
+                            'Since this model\'s transformers and megatron have different expert weight organization '
+                            'methods, LoRA weights may not be available for inference. It is recommended to set '
+                            '`--merge_lora true`. You can also manually merge LoRA weights using the '
+                            '`megatron export` command.')
                     if mg_mlp is None:
                         lora_A = None
                         lora_B = None

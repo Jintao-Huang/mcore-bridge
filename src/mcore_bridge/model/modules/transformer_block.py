@@ -8,7 +8,7 @@ from megatron.core.fp4_utils import get_fp4_context
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.transformer.transformer_block import TransformerBlock
+from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from megatron.core.utils import WrappedTensor, deprecate_inference_params, get_pg_rank, make_viewless_tensor
 from typing import List, Optional, Set, Union, cast
@@ -20,7 +20,7 @@ except ImportError:
 
 
 # Code borrowed from NVIDIA/Megatron-LM
-class CustomTransformerBlock(TransformerBlock):
+class TransformerBlock(McoreTransformerBlock):
 
     def _checkpointed_forward(
         self,
@@ -99,12 +99,34 @@ class CustomTransformerBlock(TransformerBlock):
 
             return custom_forward
 
+        # `tensor_parallel.checkpoint` / `te_checkpoint` only forward *args to the
+        # wrapped function (torch.utils.checkpoint limitation). Convert kwargs to
+        # positional args by capturing the keys in closure so tensor kwargs (e.g.
+        # qwen3-vl's visual_pos_masks / deepstack_visual_embeds) can flow through
+        # activation recompute and remain in the autograd graph.
+        extra_kwargs_keys = tuple(kwargs.keys())
+        extra_kwargs_values = tuple(kwargs.values())
+
         def checkpoint_handler(forward_func):
             """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
+
+            def wrapped_forward(hidden_states, attention_mask, context, context_mask, rotary_pos_emb, padding_mask,
+                                *extra_args):
+                extra_kwargs = dict(zip(extra_kwargs_keys, extra_args))
+                return forward_func(
+                    hidden_states,
+                    attention_mask,
+                    context,
+                    context_mask,
+                    rotary_pos_emb,
+                    padding_mask,
+                    **extra_kwargs,
+                )
+
             # TODO: check if fp4 is supported in this case
             if self.config.fp8 or self.config.fp4:
                 return te_checkpoint(
-                    forward_func,
+                    wrapped_forward,
                     self.config.distribute_saved_activations,
                     tensor_parallel.random.get_cuda_rng_tracker,
                     self.pg_collection.tp,
@@ -114,11 +136,11 @@ class CustomTransformerBlock(TransformerBlock):
                     context_mask,
                     rotary_pos_emb,
                     padding_mask,
-                    **kwargs,
+                    *extra_kwargs_values,
                 )
             else:
                 return tensor_parallel.checkpoint(
-                    forward_func,
+                    wrapped_forward,
                     self.config.distribute_saved_activations,
                     hidden_states,
                     attention_mask,
@@ -126,7 +148,7 @@ class CustomTransformerBlock(TransformerBlock):
                     context_mask,
                     rotary_pos_emb,
                     padding_mask,
-                    **kwargs,
+                    *extra_kwargs_values,
                 )
 
         if self.config.recompute_method == 'uniform':

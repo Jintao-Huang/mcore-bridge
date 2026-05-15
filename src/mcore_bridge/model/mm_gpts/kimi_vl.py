@@ -72,7 +72,7 @@ class KimiK25Vit(HuggingFaceVit):
     module_mapping = {'vision_tower': 'vision_tower', 'mm_projector': 'mm_projector'}
     _vision_tower = ['vision_tower']
     _aligner = ['mm_projector']
-    support_multimodal = False
+    test_mm_type = 'text'
 
     def prepare_model(self, hf_config: PretrainedConfig):
         output = []

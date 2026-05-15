@@ -6,12 +6,12 @@ from mcore_bridge.bridge import MultimodalGPTBridge
 from mcore_bridge.utils import split_cp_inputs
 
 from ..constant import ModelType
-from ..modules import CustomTransformerBlock
+from ..modules import TransformerBlock
 from ..register import ModelLoader, ModelMeta, register_model
 from .utils import HuggingFaceVit
 
 
-class Qwen3VLTransformerBlock(CustomTransformerBlock):
+class Qwen3VLTransformerBlock(TransformerBlock):
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
         deepstack_visual_embeds = kwargs.pop('deepstack_visual_embeds', None)
