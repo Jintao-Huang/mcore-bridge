@@ -1,6 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
 import math
+import megatron.core
 import os
 import torch
 import torch.nn.functional as F
@@ -19,6 +20,7 @@ from megatron.core.tensor_parallel.mappings import (gather_from_sequence_paralle
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
+from packaging import version
 from typing import Optional, Tuple
 
 from mcore_bridge.config import ModelConfig
