@@ -18,7 +18,7 @@ from megatron.core.transformer.transformer_layer import TransformerLayerSubmodul
 from megatron.core.utils import get_pg_rank
 from typing import Optional
 
-from mcore_bridge.utils import get_logger
+from mcore_bridge.utils import get_logger, split_cp_inputs
 
 try:
     from megatron.core.transformer.enums import CudaGraphScope
@@ -261,6 +261,8 @@ class TransformerLayer(McoreTransformerLayer):
                 hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
             mlp_kwargs.pop('padding_mask', None)
             mask = ((~kwargs['attention_mask']).sum(dim=(1, 2)) > 0).t()
+            if self.config.context_parallel_size > 1:
+                mask = split_cp_inputs(mask, None, 0)
             hidden_states = hidden_states[mask][:, None]
             if enable_sp:
                 tp_size = self.config.tensor_model_parallel_size

@@ -328,10 +328,11 @@ class GPTModel(McoreGPTModel):
             padding_mask = ~((~attention_mask).sum(dim=(1, 2)) > 0)
             if self.config.context_parallel_size > 1:
                 padding_mask = split_cp_inputs(padding_mask, None, 1)
-            if self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
-                padding_mask = torch.chunk(
-                    padding_mask, self.config.tensor_model_parallel_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
-            kwargs['padding_mask'] = padding_mask
+            tp_size = self.config.tensor_model_parallel_size
+            if self.config.sequence_parallel and tp_size > 1:
+                assert padding_mask.shape[1] % tp_size == 0, f'padding_mask.shape: {padding_mask.shape}'
+                padding_mask = torch.chunk(padding_mask, tp_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
+            kwargs['padding_mask'] = padding_mask.contiguous()
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
