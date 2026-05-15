@@ -49,6 +49,31 @@
 |:-------------------------:|
 | <img src="https://raw.githubusercontent.com/modelscope/ms-swift/main/docs/resources/wechat/megatron.png" width="200" height="200"> |
 
+## 📝 简介
+
+**mcore-bridge** 是由魔搭社区推出的、基于 Megatron-Core 生态构建的大模型与多模态大模型定义库。目前已支持 300+ 纯文本模型与 200+ 多模态模型。其中大语言模型包括 Qwen3-Next、GLM5.1、DeepSeek-V3.2、Minimax2.7、Kimi K2.5、GPT-OSS 等；多模态大模型包括 Qwen3.5-VL、Qwen3-Omni、GLM4.6-V、InternVL3.5、Ovis2.5 等。
+
+------
+
+**为什么选择 mcore-bridge？**
+
+- **模型类型**：支持 300+ 纯文本大模型与 200+ 多模态大模型，热门模型 Day 0 支持。
+- **硬件支持**：支持 A10/A100/H100/B200、RTX 系列、以及国产硬件昇腾 NPU 等多种硬件平台。
+- **训练方式**：支持全参数训练与 LoRA 训练，兼容 PEFT 生态。
+- **并行技术**：支持 Megatron Core 提供的多种并行策略（张量并行、流水线并行、序列并行、上下文并行、专家并行、虚拟流水线并行）。
+- **多模态能力**：支持多模态 FP8 训练、MTP、序列 padding-free 及 packing 等特性。
+- **任务类型**：支持因果语言模型（Causal LM）、序列分类、Embedding 及 Reranker 等多种任务类型。
+- **生态兼容**：支持直接加载与保存 LoRA/全参数 safetensors 权重，兼容 Transformers、vLLM、SGLang 等主流推理框架。
+
+------
+
+**相关文档：**
+- [ms-swift集成Mcore-Bridge](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Mcore-Bridge.html)
+- [支持的模型列表](https://swift.readthedocs.io/zh-cn/latest/Instruction/Supported-models-and-datasets.html)
+- [自定义Megatron模型](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Custom-Model.html)。
+- [Qwen3.5训练最佳实践](https://swift.readthedocs.io/zh-cn/latest/BestPractices/Qwen3_5-Best-Practice.html)
+
+
 ## 🎉 新闻
 - 🎉 2026.03.30: MCore-Bridge 正式发布！为最先进的大模型提供 Megatron-Core 模型定义，让 Megatron 训练像 Transformers 一样简单。
 
@@ -74,27 +99,57 @@ pip install -e .
 uv pip install -e . --torch-backend=auto
 ```
 
+
+推荐运行环境：
+|              | 范围           | 推荐          | 备注                 |
+|--------------|--------------|-------------|--------------------|
+| python       | >=3.10        | 3.12        |                    |
+| cuda         |              | cuda12.8/13.0      |                    |
+| torch        | >=2.0        | 2.8.0/2.11.0       |                    |
+| transformer-engine    | >=2.3       |  2.14.1    |                  |
+| apex |   |  0.1 | |
+| megatron-core    |   >=0.15,<0.18    | 0.17.0      |                  |
+| flash-attn    |        | 2.8.3/3.0.0b1   |                  |
+| transformers | >=4.33       | 4.57.6/5.8.1   |                    |
+| modelscope   | >=1.23       |             |                    |
+| peft         | >=0.11,<0.20 |             |      LoRA          |
+
+
 ## ✨ 模型列表
 
-以下为MCore-Bridge支持的模型列表：
+
+纯文本模型：
 
 | 系列     | model_type                                                   |
 | -------- | ------------------------------------------------------------ |
-| Qwen     | qwen2, qwen2_moe<br />qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3, qwen3_moe<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_next, qwen3_5, qwen3_5_moe |
+| Qwen     | qwen2, qwen2_moe<br />qwen3, qwen3_moe, qwen3_next |
 | DeepSeek | deepseek_v3, deepseek_v32                                    |
-| GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm4v, glm4v_moe, <br />glm_moe_dsa |
+| GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |
-| Kimi     | kimi_k2, kimi_vl, kimi_k25                                   |
+| Kimi     | kimi_k2, kimi_k25                                   |
 | Bailing  | bailing_moe                                                  |
-| InternLM | internlm3, internvl_chat, internvl                           |
-| Ovis     | ovis2_5                                                      |
-| Llama    | llama, llama4                                                |
+| InternLM | internlm3                           |
+| Llama    | llama                                                |
 | GPT-OSS  | gpt_oss                                                      |
 | Hunyuan  | hy_v3                                                        |
 | ERNIE    | ernie4_5, ernie4_5_moe                                       |
 | MiMo     | mimo                                                         |
 | Dots     | dots1                                                        |
 | OLMoE    | olmoe                                                        |
+
+多模态模型：
+
+| 系列     | model_type                                                   |
+| -------- | ------------------------------------------------------------ |
+| Qwen     | qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_5, qwen3_5_moe |
+| GLM      | glm4v, glm4v_moe |
+| Kimi     | kimi_vl                                   |
+| Bailing  | bailing_moe                                                  |
+| InternVL | internvl_chat, internvl                           |
+| Ovis     | ovis2_5                                                      |
+| Llama    | llama4                                                |
+| Llava    | llava-onevision                                        |
+
 
 ## 🚀 快速开始
 

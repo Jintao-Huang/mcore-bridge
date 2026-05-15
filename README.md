@@ -50,6 +50,32 @@ You can contact us and communicate with us by adding our group:
 |:-------------------------:|
 | <img src="https://raw.githubusercontent.com/modelscope/ms-swift/main/docs/resources/wechat/megatron.png" width="200" height="200"> |
 
+## 📝 Introduction
+
+**mcore-bridge** is a large language model and multimodal large model definition library built on the Megatron-Core ecosystem, developed by the ModelScope community. It currently supports 300+ text-only models and 200+ multimodal models, including large language models such as Qwen3-Next, GLM5.1, DeepSeek-V3.2, Minimax2.7, Kimi K2.5, and GPT-OSS, as well as multimodal large models such as Qwen3.5-VL, Qwen3-Omni, GLM4.6-V, InternVL3.5, and Ovis2.5.
+
+------
+
+**Why Choose mcore-bridge?**
+
+- **Model Coverage**: Supports 300+ text-only large language models and 200+ multimodal large models, with Day 0 support for popular models.
+- **Hardware Support**: Compatible with a wide range of hardware platforms, including A10/A100/H100/B200, RTX series, and domestic hardware such as Ascend NPU.
+- **Training Methods**: Supports both full-parameter training and LoRA training, with compatibility with the PEFT ecosystem.
+- **Parallelism Techniques**: Supports multiple parallelism strategies provided by Megatron-Core, including tensor parallelism, pipeline parallelism, sequence parallelism, context parallelism, expert parallelism, and virtual pipeline parallelism.
+- **Multimodal Capabilities**: Supports multimodal FP8 training, MTP, sequence padding-free, and packing features.
+- **Task Types**: Supports a variety of task types, including Causal LM, sequence classification, Embedding, and Reranker.
+- **Ecosystem Compatibility**: Supports direct loading and saving of LoRA/full-parameter safetensors weights, with compatibility with mainstream inference frameworks such as Transformers, vLLM, and SGLang.
+
+------
+
+**Related Documentation:**
+
+- [Integrating Mcore-Bridge with ms-swift](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Mcore-Bridge.html)
+- [Supported Models List](https://swift.readthedocs.io/zh-cn/latest/Instruction/Supported-models-and-datasets.html)
+- [Custom Megatron Models](https://swift.readthedocs.io/zh-cn/latest/Megatron-SWIFT/Custom-Model.html)
+- [Qwen3.5 Training Best Practices](https://swift.readthedocs.io/zh-cn/latest/BestPractices/Qwen3_5-Best-Practice.html)
+
+
 ## 🎉 News
 - 🎉 2026.03.30: MCore-Bridge is released! Providing Megatron-Core model definitions for state-of-the-art large models and making Megatron training as simple as Transformers.
 
@@ -75,27 +101,58 @@ pip install -e .
 uv pip install -e . --torch-backend=auto
 ```
 
+Recommended Runtime Environment:
+
+|        | Range | Recommended | Notes |
+|--------------|--------------|-------------|--------------------|
+| python       | >=3.10        | 3.12        |                    |
+| cuda         |              | cuda12.8/13.0      |                    |
+| torch        | >=2.0        | 2.8.0/2.11.0       |                    |
+| transformer-engine    | >=2.3       |  2.14.1    |                  |
+| apex |   |  0.1 | |
+| megatron-core    |   >=0.15,<0.18    | 0.17.0      |                  |
+| flash-attn    |        | 2.8.3/3.0.0b1   |                  |
+| transformers | >=4.33       | 4.57.6/5.8.1   |                    |
+| modelscope   | >=1.23       |             |                    |
+| peft         | >=0.11,<0.20 |             |      LoRA          |
+
+
 ## ✨ Model List
 
 The following is the list of models supported by MCore-Bridge:
 
-| Series     | model_type                                                   |
+
+**text-only large models:**
+
+| Series     | model_type                                            |
 | -------- | ------------------------------------------------------------ |
-| Qwen     | qwen2, qwen2_moe<br />qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3, qwen3_moe<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_next, qwen3_5, qwen3_5_moe |
+| Qwen     | qwen2, qwen2_moe<br />qwen3, qwen3_moe, qwen3_next |
 | DeepSeek | deepseek_v3, deepseek_v32                                    |
-| GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm4v, glm4v_moe, <br />glm_moe_dsa |
+| GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |
-| Kimi     | kimi_k2, kimi_vl, kimi_k25                                   |
+| Kimi     | kimi_k2, kimi_k25                                   |
 | Bailing  | bailing_moe                                                  |
-| InternLM | internlm3, internvl_chat, internvl                           |
-| Ovis     | ovis2_5                                                      |
-| Llama    | llama, llama4                                                |
+| InternLM | internlm3                           |
+| Llama    | llama                                                |
 | GPT-OSS  | gpt_oss                                                      |
 | Hunyuan  | hy_v3                                                        |
 | ERNIE    | ernie4_5, ernie4_5_moe                                       |
 | MiMo     | mimo                                                         |
 | Dots     | dots1                                                        |
 | OLMoE    | olmoe                                                        |
+
+**multimodal large models**
+| Series     | model_type                                            |
+| -------- | ------------------------------------------------------------ |
+| Qwen     | qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_5, qwen3_5_moe |
+| GLM      | glm4v, glm4v_moe |
+| Kimi     | kimi_vl                                   |
+| Bailing  | bailing_moe                                                  |
+| InternVL | internvl_chat, internvl                           |
+| Ovis     | ovis2_5                                                      |
+| Llama    | llama4                                                |
+| Llava    | llava-onevision                                        |
+
 
 
 ## 🚀 Quick Start
