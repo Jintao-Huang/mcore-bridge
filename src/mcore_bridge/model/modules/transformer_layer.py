@@ -18,7 +18,7 @@ from megatron.core.transformer.transformer_layer import TransformerLayerSubmodul
 from megatron.core.utils import get_pg_rank
 from typing import Optional
 
-from mcore_bridge.utils import get_logger
+from mcore_bridge.utils import get_logger, split_cp_inputs
 
 try:
     from megatron.core.transformer.enums import CudaGraphScope
@@ -248,9 +248,11 @@ class TransformerLayer(McoreTransformerLayer):
         self-attention, cross-attention (if applicable), and feed-forward operations.
         """
         # Compatible with megatron-core 0.15
-        for key in ['padding_mask']:
-            if kwargs.get(key) is None:
-                kwargs.pop(key, None)
+        padding_mask = kwargs.pop('padding_mask', None)
+        mlp_kwargs = {}
+        if padding_mask is not None:
+            kwargs['padding_mask'] = padding_mask
+            mlp_kwargs['padding_mask'] = padding_mask
         hidden_states, context = self._forward_attention(*args, **kwargs)
         # If padding_free is set, attention_mask does not exist.
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
@@ -260,7 +262,10 @@ class TransformerLayer(McoreTransformerLayer):
         if mlp_padding_free and hidden_states.shape[1] > 1:
             if enable_sp:
                 hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
+            mlp_kwargs.pop('padding_mask', None)
             mask = ((~kwargs['attention_mask']).sum(dim=(1, 2)) > 0).t()
+            if self.config.context_parallel_size > 1:
+                mask = split_cp_inputs(mask, None, 0)
             hidden_states = hidden_states[mask][:, None]
             if enable_sp:
                 tp_size = self.config.tensor_model_parallel_size
@@ -270,7 +275,7 @@ class TransformerLayer(McoreTransformerLayer):
                     pad_size = tp_size - remainder
                     hidden_states = torch.nn.functional.pad(hidden_states, (0, 0, 0, 0, 0, pad_size))
                 hidden_states = scatter_to_sequence_parallel_region(hidden_states)
-        output = self._forward_mlp(hidden_states, kwargs.get('inference_context', None))
+        output = self._forward_mlp(hidden_states, kwargs.get('inference_context', None), **mlp_kwargs)
         if mask is not None:
             if enable_sp:
                 output = gather_from_sequence_parallel_region(output, tensor_parallel_output_grad=False)

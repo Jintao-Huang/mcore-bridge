@@ -1,6 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import math
 import megatron.core
+import peft
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,6 +31,7 @@ from mcore_bridge.utils import get_current_device
 from .utils import tuners_sharded_state_dict
 
 mcore_016 = version.parse(megatron.core.__version__) >= version.parse('0.16.0rc0')
+peft_019 = version.parse(peft.__version__) >= version.parse('0.19.0')
 MINDSPEED_015 = version.parse('0.15.0')
 
 
@@ -142,8 +144,15 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
 
         self.is_target_conv_1d_layer = False
 
-    def update_layer(self, adapter_name, r, *, lora_alpha, lora_dropout, init_lora_weights, use_rslora, lora_bias,
-                     **kwargs):
+    def update_layer(self, adapter_name, r, *, lora_alpha, **kwargs):
+        if peft_019 and 'config' in kwargs:
+            config = kwargs['config']
+            lora_dropout, init_lora_weights, use_rslora, lora_bias = (config.lora_dropout, config.init_lora_weights,
+                                                                      config.use_rslora, config.lora_bias)
+        else:
+            lora_dropout, init_lora_weights, use_rslora, lora_bias = (kwargs['lora_dropout'],
+                                                                      kwargs['init_lora_weights'], kwargs['use_rslora'],
+                                                                      kwargs['lora_bias'])
         if r <= 0:
             raise ValueError(f'`r` should be a positive integer value but the value passed is {r}')
         self.r[adapter_name] = r

@@ -1,11 +1,12 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
 import math
+import megatron.core
 import os
 import torch
 import torch.nn.functional as F
 from collections import OrderedDict
-from megatron.core import parallel_state
+from megatron.core import mpu, parallel_state
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear
@@ -15,10 +16,12 @@ from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEm
 from megatron.core.models.gpt import GPTModel as McoreGPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
-                                                    gather_from_tensor_model_parallel_region)
+                                                    gather_from_tensor_model_parallel_region,
+                                                    scatter_to_sequence_parallel_region)
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
+from packaging import version
 from typing import Optional, Tuple
 
 from mcore_bridge.config import ModelConfig
@@ -27,6 +30,8 @@ from mcore_bridge.utils import get_logger, roll_tensor, split_cp_inputs
 from .rope import dynamic_rope_update, get_rope_inv_freq
 
 logger = get_logger()
+
+mcore_016 = version.parse(megatron.core.__version__) >= version.parse('0.16.0rc0')
 
 
 class OutputLayerLinear(TELinear):
@@ -328,6 +333,17 @@ class GPTModel(McoreGPTModel):
             input_tensor = self.get_input_tensor()
             input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
             self.set_input_tensor(input_tensor)
+        kwargs = {}
+        if mcore_016 and attention_mask is not None:
+            assert packed_seq_params is None
+            padding_mask = ~((~attention_mask).sum(dim=(1, 2)) > 0)
+            if self.config.context_parallel_size > 1:
+                padding_mask = split_cp_inputs(padding_mask, None, 1)
+            tp_size = self.config.tensor_model_parallel_size
+            if self.config.sequence_parallel and tp_size > 1:
+                assert padding_mask.shape[1] % tp_size == 0, f'padding_mask.shape: {padding_mask.shape}'
+                padding_mask = torch.chunk(padding_mask, tp_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
+            kwargs['padding_mask'] = padding_mask.contiguous()
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
@@ -339,6 +355,7 @@ class GPTModel(McoreGPTModel):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
             **(extra_block_kwargs or {}),
+            **kwargs,
         )
 
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
