@@ -20,7 +20,6 @@ from megatron.core.tensor_parallel.mappings import (gather_from_sequence_paralle
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
-from packaging import version
 from typing import Optional, Tuple
 
 from mcore_bridge.config import ModelConfig
@@ -29,8 +28,6 @@ from mcore_bridge.utils import get_logger, roll_tensor, split_cp_inputs
 from .rope import dynamic_rope_update, get_rope_inv_freq
 
 logger = get_logger()
-
-mcore_016 = version.parse(megatron.core.__version__) >= version.parse('0.16.0rc0')
 
 
 class OutputLayerLinear(TELinear):
@@ -321,13 +318,6 @@ class GPTModel(McoreGPTModel):
             input_tensor = self.get_input_tensor()
             input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
             self.set_input_tensor(input_tensor)
-        kwargs = {}
-        if mcore_016 and attention_mask is not None:
-            padding_mask = ~((~attention_mask).sum(dim=(1, 2)) > 0)
-            if self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
-                padding_mask = torch.chunk(
-                    padding_mask, self.config.tensor_model_parallel_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
-            kwargs['padding_mask'] = padding_mask
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
@@ -339,7 +329,6 @@ class GPTModel(McoreGPTModel):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
             **(extra_block_kwargs or {}),
-            **kwargs,
         )
 
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
