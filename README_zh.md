@@ -144,7 +144,6 @@ uv pip install -e . --torch-backend=auto
 | Qwen     | qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_5, qwen3_5_moe |
 | GLM      | glm4v, glm4v_moe |
 | Kimi     | kimi_vl                                   |
-| Bailing  | bailing_moe                                                  |
 | InternVL | internvl_chat, internvl                           |
 | Ovis     | ovis2_5                                                      |
 | Llama    | llama4                                                |
