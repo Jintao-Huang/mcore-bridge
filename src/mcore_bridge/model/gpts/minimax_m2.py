@@ -44,6 +44,13 @@ class MinimaxM2SelfAttention(SelfAttention):
             config=self.config,
             eps=self.config.layernorm_epsilon,
         )
+        # These norms operate on the gathered (TP-replicated) tensor, so they must
+        # NOT participate in the cross-TP SP/QK-layernorm grad AllReduce,
+        # otherwise the gradients will be amplified by tp_size.
+        for p in self.q_norm.parameters():
+            setattr(p, 'sequence_parallel', False)
+        for p in self.k_norm.parameters():
+            setattr(p, 'sequence_parallel', False)
 
     def get_query_key_value_tensors(self, *_args, **kwargs):
         enable_tp = mpu.get_tensor_model_parallel_world_size() > 1

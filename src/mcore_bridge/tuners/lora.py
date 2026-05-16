@@ -63,17 +63,12 @@ def _build_local_te_linear(input_size: int, output_size: int, bias: bool, **kwar
             bias=bias,
         )
     local_kwargs = dict(kwargs)
-    parallel_mode = None
-    if is_torch_npu_available():
-        # Local TE linear layers in MindSpeed 0.15.x use duplicated semantics,
-        # and this path does not accept tp_group.
-        local_kwargs.pop('tp_group', None)
-        parallel_mode = 'duplicated'
+    local_kwargs.pop('tp_group', None)
     return TELinear(
         input_size=input_size,
         output_size=output_size,
         bias=bias,
-        parallel_mode=parallel_mode,
+        parallel_mode='duplicated',
         skip_weight_param_allocation=False,
         **local_kwargs,
     )
@@ -237,13 +232,6 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
                     **kwargs,
                 )
                 lora_b.parallel_mode = self.base_layer.parallel_mode  # fix moe_shared_expert_overlap
-        for lora in [lora_a, lora_b]:
-            if getattr(lora, 'parallel_mode', None) is None and hasattr(lora, 'weight'):  # TODO: experts
-                if isinstance(self.base_layer, TopKRouter):
-                    sequence_parallel = self.base_layer.weight.sequence_parallel
-                else:
-                    sequence_parallel = self.sequence_parallel
-                lora.weight.sequence_parallel = sequence_parallel
         self.lora_A[adapter_name] = lora_a
         self.lora_B[adapter_name] = lora_b
         if hasattr(self, 'lora_bias'):

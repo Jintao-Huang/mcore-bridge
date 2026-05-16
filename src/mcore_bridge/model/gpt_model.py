@@ -116,10 +116,9 @@ class GPTModel(McoreGPTModel):
                 init_method=config.init_method,
                 bias=False,
                 skip_bias_add=False,
-                parallel_mode=None,
+                parallel_mode='duplicated',
                 skip_weight_param_allocation=False,
             )
-            self.output_layer.weight.average_gradients_across_tp_domain = True
         elif self.config.task_type == 'embedding' and self.post_process:
             self.output_layer = None
 
@@ -302,7 +301,7 @@ class GPTModel(McoreGPTModel):
         if self.config.position_embedding_type == 'mrope' and position_ids.ndim == 2:  # qwen3_asr
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
         inference_context = deprecate_inference_params(inference_context, inference_params)
-
+        # There is a difference in whether rotary_pos_emb can be fused between the decoder and MTP.
         decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
             self._preprocess(
                 input_ids=input_ids,
@@ -491,10 +490,6 @@ class GPTModel(McoreGPTModel):
                 # (so that the output layer, which expects S×B×H, receives only the final token)
                 hidden_states = inference_context.last_token_logits(hidden_states.squeeze(1).unsqueeze(0)).unsqueeze(1)
 
-        if self.config.task_type in {'seq_cls', 'embedding'
-                                     } and self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
-            hidden_states = gather_from_sequence_parallel_region(hidden_states, tensor_parallel_output_grad=False)
-
         if self.config.task_type == 'embedding':
             logits = F.normalize(hidden_states, p=2, dim=-1)
         else:
@@ -507,6 +502,10 @@ class GPTModel(McoreGPTModel):
                 positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
                 negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
                 logits = (logits[..., positive_token_id] - logits[..., negative_token_id])[..., None]
+        if self.config.task_type in {'seq_cls', 'embedding'
+                                     } and self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
+            logits = gather_from_sequence_parallel_region(logits, tensor_parallel_output_grad=False)
+
         # Restore sequence parallel execution to the output layer if necessary.
         if sequence_parallel_override:
             assert (in_inference_mode and inference_context.is_dynamic_batching()
