@@ -248,7 +248,7 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         if not get_cuda_rng_tracker().is_initialized():
             return nullcontext()
         parallel_mode = getattr(lora, 'parallel_mode', None)
-        if parallel_mode == 'duplicated':
+        if parallel_mode in (None, 'duplicated'):
             rng_context = nullcontext()
         elif self.is_expert:
             rng_context = get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name())
