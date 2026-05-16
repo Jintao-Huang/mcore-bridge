@@ -230,6 +230,20 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
                     **kwargs,
                 )
                 lora_b.parallel_mode = self.base_layer.parallel_mode  # fix moe_shared_expert_overlap
+        for lora in [lora_a, lora_b]:
+            # When parallel_mode is set to None by moe_shared_expert_overlap,
+            # disable UB comm overlap; the corresponding collectives are driven
+            # externally by the framework.
+            if isinstance(lora, (TERowParallelLinear, TEColumnParallelLinear)) and lora.parallel_mode is None:
+                lora.ub_overlap_rs_fprop = False
+                lora.ub_overlap_ag_dgrad = False
+                lora.ub_overlap_ag_fprop = False
+                lora.ub_overlap_rs_dgrad = False
+            # TEGroupedLinear is redundant across the ETP group and requires an all_reduce over the ETP group.
+            if getattr(lora, 'parallel_mode', None) is None and isinstance(lora, TEGroupedLinear):
+                for param in lora.parameters():
+                    param.average_gradients_across_tp_domain = True
+
         self.lora_A[adapter_name] = lora_a
         self.lora_B[adapter_name] = lora_b
         if hasattr(self, 'lora_bias'):
@@ -248,7 +262,7 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         if not get_cuda_rng_tracker().is_initialized():
             return nullcontext()
         parallel_mode = getattr(lora, 'parallel_mode', None)
-        if parallel_mode in (None, 'duplicated'):
+        if parallel_mode in {'duplicated', None}:
             rng_context = nullcontext()
         elif self.is_expert:
             rng_context = get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name())
