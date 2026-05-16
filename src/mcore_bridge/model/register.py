@@ -118,7 +118,7 @@ class ModelLoader:
                 if hasattr(layer_spec.submodules.mlp.submodules, 'shared_experts'):
                     layer_spec.submodules.mlp.submodules.shared_experts.params = {'gate': True}
 
-    def _set_custom_layer(self, transformer_layer_spec):
+    def _set_transformer_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = TransformerLayer
 
@@ -130,7 +130,7 @@ class ModelLoader:
     ) -> Union['GPTModel', 'MultimodalGPTModel']:
         transformer_layer_spec = self.get_transformer_layer_spec(vp_stage=vp_stage)
         self._set_shared_expert_gate(transformer_layer_spec)
-        self._set_custom_layer(transformer_layer_spec)
+        self._set_transformer_layer(transformer_layer_spec)
         mtp_block_spec = None
         if self.config.mtp_num_layers is not None:
             mtp_block_spec = self.get_mtp_block_spec(transformer_layer_spec, vp_stage=vp_stage)

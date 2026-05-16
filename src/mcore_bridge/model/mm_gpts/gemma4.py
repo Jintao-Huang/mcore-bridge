@@ -20,7 +20,7 @@ from mcore_bridge.config import ModelConfig
 from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..mm_gpt_model import MultimodalGPTModel
-from ..modules import CustomTransformerBlock, CustomTransformerLayer
+from ..modules import TransformerBlock, TransformerLayer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
@@ -326,10 +326,11 @@ class Gemma4TextGPTModel(GPTModel):
         # full
         self.full_rotary_pos_emb = copy.copy(self.rotary_pos_emb)
         self.config.rope_scaling = rope_scaling['full_attention']
-        kwargs = {}
+        kwargs = {'layer_type': 'full_attention'}
         if self.config.rope_scaling['rope_type'] == 'proportional':
             kwargs['head_dim_key'] = 'global_head_dim'
-        new_inv_freq, attention_scaling = get_rope_inv_freq(self.config, **kwargs)
+        new_inv_freq, attention_scaling = get_rope_inv_freq(
+            self.config, text_config=self.config.hf_config.text_config, **kwargs)
         assert attention_scaling == 1, 'not support'
         self.full_rotary_pos_emb.inv_freq = new_inv_freq
         self.attention_scaling = attention_scaling
@@ -340,17 +341,28 @@ class Gemma4TextGPTModel(GPTModel):
         extra_block_kwargs = kwargs.pop('extra_block_kwargs', None) or {}
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
         if self.hidden_size_per_layer_input and self.pre_process:
+            inputs_embeds = kwargs['decoder_input']
             per_layer_inputs = (self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale).reshape(
                 *llm_input_ids.shape,
                 self.text_config.num_hidden_layers,
                 self.hidden_size_per_layer_input,
             )
+            per_layer_projection = self.per_layer_model_projection(
+                inputs_embeds)[0] * self.per_layer_model_projection_scale
+            per_layer_projection = per_layer_projection.reshape(
+                *inputs_embeds.shape[:-1],
+                self.text_config.num_hidden_layers,
+                self.hidden_size_per_layer_input,
+            )
+            per_layer_projection = self.per_layer_projection_norm(per_layer_projection).transpose(0, 1)
+            per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
+
         extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         return super().forward(*args, **kwargs)
 
 
-class Gemma4TransformerLayer(CustomTransformerLayer):
+class Gemma4TransformerLayer(TransformerLayer):
 
     def __init__(self, config, submodules, *args, **kwargs):
         super().__init__(config, submodules, *args, **kwargs)
@@ -414,12 +426,14 @@ class Gemma4GPTModel(MultimodalGPTModel):
     language_model_cls = Gemma4TextGPTModel
 
 
-class Gemma4TransformerBlock(CustomTransformerBlock):
+class Gemma4TransformerBlock(TransformerBlock):
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
         layer_number = layer.layer_number - 1
         per_layer_inputs = kwargs.pop('per_layer_inputs', None)
         kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
+        layer_type = self.config.hf_config.text_config.layer_types[layer_number]
+        kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][layer_type]
         return super()._layer_forward(layer, hidden_states, **kwargs)
 
 
@@ -435,7 +449,7 @@ class Gemma4Loader(ModelLoader):
             layer_spec.submodules.mlp.module = Gemma4MLP
         return layer_specs
 
-    def _set_custom_layer(self, transformer_layer_spec):
+    def _set_transformer_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = Gemma4TransformerLayer
 
