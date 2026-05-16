@@ -123,8 +123,6 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         self.sequence_parallel = getattr(base_layer, 'sequence_parallel', False)
         if self.is_expert:
             self.tp_size = get_expert_tensor_parallel_world_size()
-            if self.tp_size > 1:
-                raise ValueError('Currently, LoRA does not support ETP.')  # TODO: init/all-reduce
         else:
             self.tp_size = get_tensor_model_parallel_world_size()
         self.update_layer(
@@ -249,10 +247,11 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
     def _get_rng_context(self, lora):
         if not get_cuda_rng_tracker().is_initialized():
             return nullcontext()
-        if self.is_expert:
-            rng_context = get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name())
-        elif getattr(lora, 'parallel_mode', None) is None:
+        parallel_mode = getattr(lora, 'parallel_mode', None)
+        if parallel_mode == 'duplicated':
             rng_context = nullcontext()
+        elif self.is_expert:
+            rng_context = get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name())
         else:
             rng_context = get_cuda_rng_tracker().fork()
         return rng_context
