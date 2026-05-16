@@ -3,16 +3,22 @@ import copy
 import math
 import torch
 import torch.distributed as dist
-from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TENorm, TERowParallelLinear
+from megatron.core.extensions.transformer_engine import (SplitAlongDim, TEColumnParallelLinear, TENorm,
+                                                         TERowParallelLinear)
+from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
+from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel import VocabParallelEmbedding
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.spec_utils import build_module
+from megatron.core.utils import make_viewless_tensor, nvtx_range_pop, nvtx_range_push
+from torch import Tensor
 from transformers import AutoModel, PretrainedConfig
-from typing import Optional
+from typing import Optional, Tuple
 
 from mcore_bridge.bridge import MultimodalGPTBridge
 from mcore_bridge.config import ModelConfig
@@ -133,7 +139,7 @@ class Gemma4SelfAttention(SelfAttention):
             if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
 
         # Alternative attention (k == v) for global layers when `attention_k_eq_v` is set
-        self.use_alternative_attention = (getattr(text_config, 'attention_k_eq_v', False) and not self.is_sliding)
+        self.use_alternative_attention = (text_config.attention_k_eq_v and not self.is_sliding)
         num_key_value_heads = (
             text_config.num_global_key_value_heads
             if self.use_alternative_attention else text_config.num_key_value_heads)
@@ -187,6 +193,134 @@ class Gemma4SelfAttention(SelfAttention):
         self.v_norm = (
             Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon) if not self.is_kv_shared_layer else None)
 
+    def _forward_core_attention(
+        self,
+        query,
+        key,
+        value,
+        attention_mask,
+        attention_bias: Optional[torch.Tensor] = None,
+        packed_seq_params: Optional[PackedSeqParams] = None,
+    ):
+        nvtx_range_push(suffix='core_attention')
+        attn_mask_type = self.attn_mask_type
+        if self.checkpoint_core_attention and self.training:
+            core_attn_out = self._checkpointed_attention_forward(
+                query,
+                key,
+                value,
+                attention_mask,
+                attn_mask_type=attn_mask_type,
+                attention_bias=attention_bias,
+                packed_seq_params=packed_seq_params,
+            )
+        else:
+            core_attn_out = self.core_attention(
+                query,
+                key,
+                value,
+                attention_mask,
+                attn_mask_type=attn_mask_type,
+                attention_bias=attention_bias,
+                packed_seq_params=packed_seq_params,
+            )
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            # reshape to same output shape as unpacked case
+            # (t, np, hn) -> (t, b=1, h=np*hn)
+            # t is the pack size = sum (sq_i)
+            # note that batch is a dummy dimension in the packed case
+            core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
+        nvtx_range_pop(suffix='core_attention')
+        return core_attn_out
+
+    def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
+        nvtx_range_push(suffix='rotary_pos_emb')
+        q_pos_emb, k_pos_emb = rotary_pos_emb
+
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            if packed_seq_params.cu_seqlens_q_padded is not None:
+                cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
+            else:
+                cu_seqlens_q = packed_seq_params.cu_seqlens_q
+            if packed_seq_params.cu_seqlens_kv_padded is not None:
+                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv_padded
+            else:
+                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
+        else:
+            cu_seqlens_q = cu_seqlens_kv = None
+
+        if q_pos_emb is not None:
+            # TODO VIJAY: simplify
+            query = apply_rotary_pos_emb(
+                query,
+                q_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_q,
+                mscale=_yarn_get_concentration_factor_from_config(self.config),
+                cp_group=self.pg_collection.cp,
+            )
+        if not self.is_kv_shared_layer and k_pos_emb is not None:
+            key = apply_rotary_pos_emb(
+                key,
+                k_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_kv,
+                mscale=_yarn_get_concentration_factor_from_config(self.config),
+                cp_group=self.pg_collection.cp,
+            )
+        nvtx_range_pop(suffix='rotary_pos_emb')
+        return query, key
+
+    def forward(self, hidden_states: Tensor, attention_mask: Tensor, **kwargs) -> Tuple[Tensor, Tensor]:
+        shared_kv_states = kwargs['shared_kv_states']
+        rotary_pos_emb = kwargs.get('rotary_pos_emb')
+        packed_seq_params = kwargs.get('packed_seq_params')
+        attention_bias = kwargs.get('attention_bias')
+        mixed_qkv, _ = self.linear_qkv(hidden_states)
+        if self.is_kv_shared_layer:
+            query = mixed_qkv
+            key, value = shared_kv_states[self.layer_type]
+        else:
+            num_query_heads_per_group = (self.num_attention_heads_per_partition // self.num_query_groups_per_partition)
+            num_qkv_heads_per_group = num_query_heads_per_group + 2
+            # If no output gate: [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
+            # If have output gate: [sq, b, hp] --> [sq, b, ng, (2 * np/ng + 2) * hn]
+            new_tensor_shape = mixed_qkv.size()[:-1] + (
+                self.num_query_groups_per_partition,
+                num_qkv_heads_per_group * self.hidden_size_per_attention_head,
+            )
+            mixed_qkv = mixed_qkv.view(*new_tensor_shape)
+
+            # If no output gate: [sq, b, ng, (np/ng + 2) * hn]
+            # --> [sq, b, ng, np/ng * hn], None, [sq, b, ng, hn], [sq, b, ng, hn]
+            split_arg_list = [
+                num_query_heads_per_group * self.hidden_size_per_attention_head,
+                self.hidden_size_per_attention_head,
+                self.hidden_size_per_attention_head,
+            ]
+            if SplitAlongDim is not None:
+                (query, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
+            else:
+                (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+                key = self.k_layernorm(key)
+                value = self.v_norm(value)
+        # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+        query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
+        query = self.q_layernorm(query)
+        if isinstance(rotary_pos_emb, torch.Tensor):
+            rotary_pos_emb = (rotary_pos_emb, ) * 2
+
+        query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
+        if self.store_full_length_kv:
+            shared_kv_states[self.layer_type] = key, value
+        core_attn_out = self._forward_core_attention(query, key, value, attention_mask, attention_bias,
+                                                     packed_seq_params)
+
+        nvtx_range_push(suffix='linear_proj')
+        output, bias = self.linear_proj(core_attn_out)
+        nvtx_range_pop(suffix='linear_proj')
+        return output, bias
+
 
 class Gemma4MLP(MLP):
 
@@ -214,7 +348,7 @@ class Gemma4MLP(MLP):
 
 class Gemma4Bridge(MultimodalGPTBridge):
     hf_post_attention_layernorm = 'pre_feedforward_layernorm'
-    additional_dim0_keys = {'per_layer_input_gate', 'per_layer_model_projection'}
+    additional_dim0_keys = {'embed_tokens_per_layer', 'per_layer_input_gate', 'per_layer_model_projection'}
     additional_dim1_keys = {'per_layer_projection'}
 
     def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore):
@@ -249,6 +383,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
         ]:
             self._set_state_dict(
                 mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore, _check_mg_param=False)
+        self._set_state_dict(mg_layer, 'layer_scalar', hf_state_dict, 'layer_scalar', to_mcore)
         if to_mcore:
             hf_state_dict = {}
         else:
@@ -270,8 +405,8 @@ class Gemma4TextGPTModel(GPTModel):
         text_config = self.config.hf_config.text_config
         self.text_config = text_config
         self.unique_layer_types = set(text_config.layer_types)
-
-        self.hidden_size_per_layer_input = getattr(text_config, 'hidden_size_per_layer_input', None)
+        self.hidden_size_per_layer_input = text_config.hidden_size_per_layer_input
+        self.final_logit_softcapping = text_config.final_logit_softcapping
         if self.hidden_size_per_layer_input and self.pre_process:
             num_layers = text_config.num_hidden_layers
             hidden_size = text_config.hidden_size
@@ -346,7 +481,7 @@ class Gemma4TextGPTModel(GPTModel):
                 *llm_input_ids.shape,
                 self.text_config.num_hidden_layers,
                 self.hidden_size_per_layer_input,
-            )
+            ).transpose(0, 1)
             per_layer_projection = self.per_layer_model_projection(
                 inputs_embeds)[0] * self.per_layer_model_projection_scale
             per_layer_projection = per_layer_projection.reshape(
@@ -354,12 +489,21 @@ class Gemma4TextGPTModel(GPTModel):
                 self.text_config.num_hidden_layers,
                 self.hidden_size_per_layer_input,
             )
-            per_layer_projection = self.per_layer_projection_norm(per_layer_projection).transpose(0, 1)
+            per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
             per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
 
         extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
+        extra_block_kwargs['shared_kv_states'] = {}
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         return super().forward(*args, **kwargs)
+
+    def _forward_output_layer(self, hidden_states, *args, **kwargs):
+        logits, _ = self.output_layer(hidden_states, *args, **kwargs)
+        if self.final_logit_softcapping is not None:
+            logits = logits / self.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.final_logit_softcapping
+        return logits
 
 
 class Gemma4TransformerLayer(TransformerLayer):
@@ -375,7 +519,7 @@ class Gemma4TransformerLayer(TransformerLayer):
 
         self.register_buffer('layer_scalar', torch.ones(1))
 
-        self.hidden_size_per_layer_input = getattr(text_config, 'hidden_size_per_layer_input', None)
+        self.hidden_size_per_layer_input = text_config.hidden_size_per_layer_input
         if self.hidden_size_per_layer_input:
             from transformers.activations import ACT2FN
             self.act_fn = ACT2FN[text_config.hidden_activation]
@@ -407,7 +551,7 @@ class Gemma4TransformerLayer(TransformerLayer):
             )
             self.post_per_layer_input_norm = build_module(TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
-        self.enable_moe_block = getattr(text_config, 'enable_moe_block', False)
+        self.enable_moe_block = text_config.enable_moe_block
         if self.enable_moe_block:
             self.post_feedforward_layernorm_1 = build_module(
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
@@ -416,10 +560,49 @@ class Gemma4TransformerLayer(TransformerLayer):
             self.pre_feedforward_layernorm_2 = build_module(
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
-    def forward(self, *args, **kwargs):
+    def _forward_attention(self, hidden_states: Tensor, **kwargs):
+        context = kwargs.pop('context', None)
+        residual = hidden_states
+        input_layernorm_output = self.input_layernorm(hidden_states)
+        # Self attention.
+        nvtx_range_push(suffix='self_attention')
+        attention_output, bias = self.self_attention(input_layernorm_output, **kwargs)
+        nvtx_range_pop(suffix='self_attention')
+        attention_output = self.post_attention_layernorm(attention_output)
+
+        hidden_states = self.self_attn_bda(self.training, self.config.bias_dropout_fusion)(
+            (attention_output, bias), residual, self.hidden_dropout)
+        return hidden_states, context
+
+    def _forward_mlp(self, hidden_states, inference_context=None, padding_mask=None):
+        # Residual connection.
+        residual = hidden_states
+
+        # Optional Layer norm post the cross-attention.
+        pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)
+        mlp_output, bias = self.mlp(pre_mlp_layernorm_output, padding_mask=padding_mask)
+        if self.enable_moe_block:
+            pass
+        mlp_output = self.post_feedforward_layernorm(mlp_output)
+        hidden_states = self.mlp_bda(self.training, self.config.bias_dropout_fusion)((mlp_output, bias), residual,
+                                                                                     self.hidden_dropout)
+        output = make_viewless_tensor(inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True)
+        return output
+
+    def forward(self, hidden_states, *args, **kwargs):
         per_layer_input = kwargs.pop('per_layer_input', None)
-        output, context = super().forward(*args, **kwargs)
-        return output, context
+        hidden_states, context = super().forward(hidden_states, *args, **kwargs)
+        if self.hidden_size_per_layer_input:
+            residual = hidden_states
+            hidden_states, _ = self.per_layer_input_gate(hidden_states)
+            hidden_states = self.act_fn(hidden_states)
+            hidden_states = hidden_states * per_layer_input
+            hidden_states, _ = self.per_layer_projection(hidden_states)
+            hidden_states = self.post_per_layer_input_norm(hidden_states)
+            hidden_states = residual + hidden_states
+
+        hidden_states *= self.layer_scalar
+        return hidden_states, context
 
 
 class Gemma4GPTModel(MultimodalGPTModel):

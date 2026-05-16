@@ -1,4 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import torch.nn.functional as F
+from functools import partial
 from transformers import PretrainedConfig
 from typing import Any, Dict
 
@@ -155,6 +157,13 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res['rotary_interleaved'] = True
     elif hf_model_type in {'gemma4'}:
         res['qk_layernorm'] = True
+        res['window_size'] = f'{window_size},0'
+        window_attn_skip_freq = ','.join(['1' if lt == 'sliding_attention' else '0' for lt in layer_types])
+        res['window_attn_skip_freq'] = f'[{window_attn_skip_freq}]'
+        res['softmax_scale'] = 1.
+        res['swiglu'] = False
+        res['gated_linear_unit'] = True
+        res['activation_func'] = partial(F.gelu, approximate='tanh')
     elif llm_model_type == 'gpt_oss':
         res['add_bias_linear'] = True
         res['bias_dropout_fusion'] = False

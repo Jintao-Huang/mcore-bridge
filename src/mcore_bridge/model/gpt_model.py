@@ -378,6 +378,9 @@ class GPTModel(McoreGPTModel):
             inference_context=inference_context,
         )
 
+    def _forward_output_layer(self, hidden_states, *args, **kwargs):
+        return self.output_layer(hidden_states, *args, **kwargs)[0]
+
     def _postprocess(
         self,
         hidden_states,
@@ -444,7 +447,7 @@ class GPTModel(McoreGPTModel):
                 loss_mask = torch.ones_like(mtp_labels)
             for mtp_layer_number in range(self.config.mtp_unroll_steps):
                 # output
-                mtp_logits, _ = self.output_layer(
+                mtp_logits = self._forward_output_layer(
                     hidden_states_list[mtp_layer_number + 1],
                     weight=output_weight,
                     runtime_gather_output=runtime_gather_output,
@@ -509,7 +512,7 @@ class GPTModel(McoreGPTModel):
         if self.config.task_type == 'embedding':
             logits = F.normalize(hidden_states, p=2, dim=-1)
         else:
-            logits, _ = self.output_layer(
+            logits = self._forward_output_layer(
                 hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output)
             if self.config.task_type == 'generative_reranker':
                 logits = gather_from_tensor_model_parallel_region(logits)
