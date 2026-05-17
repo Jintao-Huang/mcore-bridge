@@ -63,17 +63,12 @@ def _build_local_te_linear(input_size: int, output_size: int, bias: bool, **kwar
             bias=bias,
         )
     local_kwargs = dict(kwargs)
-    parallel_mode = None
-    if is_torch_npu_available():
-        # Local TE linear layers in MindSpeed 0.15.x use duplicated semantics,
-        # and this path does not accept tp_group.
-        local_kwargs.pop('tp_group', None)
-        parallel_mode = 'duplicated'
+    local_kwargs.pop('tp_group', None)
     return TELinear(
         input_size=input_size,
         output_size=output_size,
         bias=bias,
-        parallel_mode=parallel_mode,
+        parallel_mode='duplicated',
         skip_weight_param_allocation=False,
         **local_kwargs,
     )
@@ -128,8 +123,12 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         self.sequence_parallel = getattr(base_layer, 'sequence_parallel', False)
         if self.is_expert:
             self.tp_size = get_expert_tensor_parallel_world_size()
+            # TODO: For TEGroupedLinear under ETP, initialization must use different random seeds
+            #       across EP ranks and identical random seeds across ETP ranks.
+            # Additionally, a parameter-averaging all_reduce across the ETP group is required.
+            # Note that TEGroupedLinear here excludes TEColumnParallelGroupedLinear and TERowParallelGroupedLinear.
             if self.tp_size > 1:
-                raise ValueError('Currently, LoRA does not support ETP.')  # TODO: init/all-reduce
+                raise ValueError('Currently, LoRA does not support ETP.')
         else:
             self.tp_size = get_tensor_model_parallel_world_size()
         self.update_layer(
@@ -238,12 +237,15 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
                 )
                 lora_b.parallel_mode = self.base_layer.parallel_mode  # fix moe_shared_expert_overlap
         for lora in [lora_a, lora_b]:
-            if getattr(lora, 'parallel_mode', None) is None and hasattr(lora, 'weight'):  # TODO: experts
-                if isinstance(self.base_layer, TopKRouter):
-                    sequence_parallel = self.base_layer.weight.sequence_parallel
-                else:
-                    sequence_parallel = self.sequence_parallel
-                lora.weight.sequence_parallel = sequence_parallel
+            # When parallel_mode is set to None by moe_shared_expert_overlap,
+            # disable UB comm overlap; the corresponding collectives are driven
+            # externally by the framework.
+            if isinstance(lora, (TERowParallelLinear, TEColumnParallelLinear)) and lora.parallel_mode is None:
+                lora.ub_overlap_rs_fprop = False
+                lora.ub_overlap_ag_dgrad = False
+                lora.ub_overlap_ag_fprop = False
+                lora.ub_overlap_rs_dgrad = False
+
         self.lora_A[adapter_name] = lora_a
         self.lora_B[adapter_name] = lora_b
         if hasattr(self, 'lora_bias'):
@@ -261,9 +263,10 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
     def _get_rng_context(self, lora):
         if not get_cuda_rng_tracker().is_initialized():
             return nullcontext()
+        parallel_mode = getattr(lora, 'parallel_mode', None)
         if self.is_expert:
             rng_context = get_cuda_rng_tracker().fork(get_expert_parallel_rng_tracker_name())
-        elif getattr(lora, 'parallel_mode', None) is None:
+        elif parallel_mode in {'duplicated', None}:
             rng_context = nullcontext()
         else:
             rng_context = get_cuda_rng_tracker().fork()
