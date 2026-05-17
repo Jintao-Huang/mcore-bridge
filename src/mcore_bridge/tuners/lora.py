@@ -123,6 +123,12 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
         self.sequence_parallel = getattr(base_layer, 'sequence_parallel', False)
         if self.is_expert:
             self.tp_size = get_expert_tensor_parallel_world_size()
+            # TODO: For TEGroupedLinear under ETP, initialization must use different random seeds
+            #       across EP ranks and identical random seeds across ETP ranks.
+            # Additionally, a parameter-averaging all_reduce across the ETP group is required.
+            # Note that TEGroupedLinear here excludes TEColumnParallelGroupedLinear and TERowParallelGroupedLinear.
+            if self.tp_size > 1:
+                raise ValueError('Currently, LoRA does not support ETP.')
         else:
             self.tp_size = get_tensor_model_parallel_world_size()
         self.update_layer(
@@ -239,10 +245,6 @@ class LoraParallelLinear(MegatronModule, LoraLayer):
                 lora.ub_overlap_ag_dgrad = False
                 lora.ub_overlap_ag_fprop = False
                 lora.ub_overlap_rs_dgrad = False
-            # TEGroupedLinear is redundant across the ETP group and requires an all_reduce over the ETP group.
-            if getattr(lora, 'parallel_mode', None) is None and isinstance(lora, TEGroupedLinear):
-                for param in lora.parameters():
-                    param.average_gradients_across_tp_domain = True
 
         self.lora_A[adapter_name] = lora_a
         self.lora_B[adapter_name] = lora_b
