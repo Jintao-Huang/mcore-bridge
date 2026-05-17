@@ -87,6 +87,16 @@ def patch_deepcopy():
 
         for key, value in saved_values.items():
             setattr(res, key, value)
+
+        # copy params attr
+        for name, param in x.named_parameters():
+            res_param = deep_getattr(res, name)
+            if res_param is None:
+                continue
+            for k, v in param.__dict__.items():
+                if not hasattr(res_param, k):
+                    setattr(res_param, k, v)
+
         return res
 
     copy.deepcopy = new_deepcopy
