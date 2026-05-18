@@ -10,7 +10,8 @@ from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEm
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.tensor_parallel import VocabParallelEmbedding
+from megatron.core.parallel_state import get_tensor_model_parallel_rank
+from megatron.core.tensor_parallel import VocabParallelEmbedding, all_gather_last_dim_from_tensor_parallel_region
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
@@ -147,7 +148,7 @@ class Gemma4SelfAttention(SelfAttention):
 
         # Shared KV across the trailing layers
         num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
-        first_kv_shared_layer_idx = text_config.num_hidden_layers - num_kv_shared_layers
+        first_kv_shared_layer_idx = config.num_layers - num_kv_shared_layers
         self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
         prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
         if self.is_kv_shared_layer:
@@ -277,20 +278,24 @@ class Gemma4SelfAttention(SelfAttention):
         packed_seq_params = kwargs.get('packed_seq_params')
         attention_bias = kwargs.get('attention_bias')
         mixed_qkv, _ = self.linear_qkv(hidden_states)
+        if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
+            mixed_qkv = all_gather_last_dim_from_tensor_parallel_region(mixed_qkv)
+            idx = get_tensor_model_parallel_rank() // (self.world_size // self.config.num_query_groups)
+            size = mixed_qkv.size()[-1] // self.config.num_query_groups
+            mixed_qkv = mixed_qkv[:, :, idx * size:(idx + 1) * size]
+
         if self.is_kv_shared_layer:
             query = mixed_qkv
             key, value = shared_kv_states[self.layer_type]
         else:
             num_query_heads_per_group = (self.num_attention_heads_per_partition // self.num_query_groups_per_partition)
-            num_qkv_heads_per_group = num_query_heads_per_group + 2
             # If no output gate: [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
             # If have output gate: [sq, b, hp] --> [sq, b, ng, (2 * np/ng + 2) * hn]
             new_tensor_shape = mixed_qkv.size()[:-1] + (
                 self.num_query_groups_per_partition,
-                num_qkv_heads_per_group * self.hidden_size_per_attention_head,
+                (num_query_heads_per_group + 2) * self.hidden_size_per_attention_head,
             )
             mixed_qkv = mixed_qkv.view(*new_tensor_shape)
-
             # If no output gate: [sq, b, ng, (np/ng + 2) * hn]
             # --> [sq, b, ng, np/ng * hn], None, [sq, b, ng, hn], [sq, b, ng, hn]
             split_arg_list = [
@@ -306,6 +311,10 @@ class Gemma4SelfAttention(SelfAttention):
                 value = self.v_norm(value)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
+        if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
+            idx = get_tensor_model_parallel_rank() % (self.world_size // self.config.num_query_groups)
+            size = query.shape[2] // (self.world_size // self.config.num_query_groups)
+            query = query[:, :, idx * size:(idx + 1) * size, :]
         query = self.q_layernorm(query)
         if isinstance(rotary_pos_emb, torch.Tensor):
             rotary_pos_emb = (rotary_pos_emb, ) * 2
@@ -335,7 +344,7 @@ class Gemma4MLP(MLP):
         self.layer_number = layer_number
         text_config = config.hf_config.text_config
         self.enable_moe_block = text_config.enable_moe_block
-        first_kv_shared_layer_idx = text_config.num_hidden_layers - text_config.num_kv_shared_layers
+        first_kv_shared_layer_idx = config.num_layers - text_config.num_kv_shared_layers
         is_kv_shared_layer = layer_number > first_kv_shared_layer_idx > 0
         use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
         ffn_hidden_size = config.ffn_hidden_size
@@ -408,13 +417,9 @@ class Gemma4TextGPTModel(GPTModel):
         self.hidden_size_per_layer_input = text_config.hidden_size_per_layer_input
         self.final_logit_softcapping = text_config.final_logit_softcapping
         if self.hidden_size_per_layer_input and self.pre_process:
-            num_layers = text_config.num_hidden_layers
-            hidden_size = text_config.hidden_size
-            total_dim = num_layers * self.hidden_size_per_layer_input
-            tp_size = self.config.tensor_model_parallel_size
-            padded_vocab_size_per_layer = math.ceil(text_config.vocab_size_per_layer_input / tp_size) * tp_size
+            total_dim = self.config.num_layers * self.hidden_size_per_layer_input
             self.embed_tokens_per_layer = VocabParallelEmbedding(
-                num_embeddings=padded_vocab_size_per_layer,
+                num_embeddings=self.vocab_size,
                 embedding_dim=total_dim,
                 init_method=self.config.init_method,
                 config=self.config,
@@ -424,18 +429,18 @@ class Gemma4TextGPTModel(GPTModel):
             self.per_layer_input_scale = 2.0**-0.5
             self.per_layer_model_projection = build_module(
                 TEColumnParallelLinear,
-                hidden_size,
+                self.config.hidden_size,
                 total_dim,
                 config=self.config,
                 init_method=self.config.init_method,
                 gather_output=False,
                 bias=False,
-                skip_bias_add=True,
+                skip_bias_add=False,
                 is_expert=False,
                 tp_comm_buffer_name='per_layer_model_projection',
                 tp_group=self.pg_collection.tp,
             )
-            self.per_layer_model_projection_scale = hidden_size**-0.5
+            self.per_layer_model_projection_scale = self.config.hidden_size**-0.5
             self.per_layer_projection_norm = build_module(
                 TENorm,
                 hidden_size=self.hidden_size_per_layer_input,
@@ -477,21 +482,15 @@ class Gemma4TextGPTModel(GPTModel):
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
         if self.hidden_size_per_layer_input and self.pre_process:
             inputs_embeds = kwargs['decoder_input']
-            per_layer_inputs = (self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale).reshape(
-                *llm_input_ids.shape,
-                self.text_config.num_hidden_layers,
-                self.hidden_size_per_layer_input,
-            ).transpose(0, 1)
+            per_layer_inputs = self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale
+            per_layer_inputs = per_layer_inputs.reshape(*per_layer_inputs.shape[:-1], self.config.num_layers,
+                                                        -1).transpose(0, 1)
             per_layer_projection = self.per_layer_model_projection(
                 inputs_embeds)[0] * self.per_layer_model_projection_scale
-            per_layer_projection = per_layer_projection.reshape(
-                *inputs_embeds.shape[:-1],
-                self.text_config.num_hidden_layers,
-                self.hidden_size_per_layer_input,
-            )
+            per_layer_projection = per_layer_projection.reshape(*per_layer_projection.shape[:-1],
+                                                                self.config.num_layers, -1)
             per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
             per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
-
         extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
         extra_block_kwargs['shared_kv_states'] = {}
         kwargs['extra_block_kwargs'] = extra_block_kwargs
@@ -531,7 +530,7 @@ class Gemma4TransformerLayer(TransformerLayer):
                 init_method=self.config.init_method,
                 gather_output=False,
                 bias=False,
-                skip_bias_add=True,
+                skip_bias_add=False,
                 is_expert=False,
                 tp_comm_buffer_name='per_layer_input_gate',
                 tp_group=self.pg_collection.tp,
