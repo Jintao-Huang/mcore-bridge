@@ -334,9 +334,12 @@ class GPTModel(McoreGPTModel):
             input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
             self.set_input_tensor(input_tensor)
         kwargs = {}
+        full_attention_mask = attention_mask
+        if isinstance(full_attention_mask, dict):
+            full_attention_mask = full_attention_mask['full_attention']
         if mcore_016 and attention_mask is not None:
             assert packed_seq_params is None
-            padding_mask = ~((~attention_mask).sum(dim=(1, 2)) > 0)
+            padding_mask = ~((~full_attention_mask).sum(dim=(1, 2)) > 0)
             if self.config.context_parallel_size > 1:
                 padding_mask = split_cp_inputs(padding_mask, None, 1)
             tp_size = self.config.tensor_model_parallel_size

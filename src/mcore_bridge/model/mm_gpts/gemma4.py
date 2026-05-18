@@ -523,7 +523,7 @@ class Gemma4TextGPTModel(GPTModel):
         kwargs['attention_mask'] = {'sliding_attention': attention_mask, 'full_attention': attention_mask}
         if self.text_config.use_bidirectional_attention == 'vision':
             kwargs['attention_mask']['sliding_attention'] = self._create_sliding_attention_mask(
-                kwargs['attention_mask'], mm_token_type_ids)
+                attention_mask, mm_token_type_ids)
         hidden_states = super().forward(*args, **kwargs)
         if self.hidden_size_per_layer_input and not self.post_process:
             hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
@@ -540,13 +540,12 @@ class Gemma4TextGPTModel(GPTModel):
         is_prev_vision = torch.roll(is_vision, shifts=1, dims=-1)
         is_prev_vision[:, 0] = False
         vision_group_ids = torch.cumsum((is_vision & ~is_prev_vision).int(), dim=1) - 1
-        vision_group_ids = torch.where(is_vision, vision_group_ids,
-                                    torch.full_like(vision_group_ids, -1))
+        vision_group_ids = torch.where(is_vision, vision_group_ids, torch.full_like(vision_group_ids, -1))
 
         q_group = vision_group_ids.unsqueeze(1).unsqueeze(-1)
         k_group = vision_group_ids.unsqueeze(1).unsqueeze(-2)
         same_vision_group = (q_group == k_group) & (q_group >= 0) & (k_group >= 0)
-        return attention_mask | window_mask | ~same_vision_group
+        return (attention_mask | window_mask) & ~same_vision_group
 
     def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
         per_layer_inputs = per_layer_inputs.view(*hidden_states.shape[:2], -1)
