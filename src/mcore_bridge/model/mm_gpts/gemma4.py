@@ -290,9 +290,14 @@ class Gemma4SelfAttention(SelfAttention):
             split_arg_list = [num_query_heads_per_group * self.hidden_size_per_attention_head
                               ] + [self.hidden_size_per_attention_head] * kv_heads_per_group
             if SplitAlongDim is not None:
-                (query, key, value) = SplitAlongDim(mixed_qkv, len(split_arg_list), split_arg_list)
+                qkv = SplitAlongDim(mixed_qkv, len(split_arg_list), split_arg_list)
             else:
-                (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+                qkv = torch.split(mixed_qkv, split_arg_list, dim=3)
+            if self.use_alternative_attention:
+                query, key = qkv
+                value = key
+            else:
+                query, key, value = qkv
             key = self.k_layernorm(key)
             value = self.v_norm(value)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
@@ -485,6 +490,7 @@ class Gemma4TextGPTModel(GPTModel):
         extra_block_kwargs = kwargs.pop('extra_block_kwargs', None) or {}
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
         decoder_input = kwargs.get('decoder_input')
+        shared_kv_states = {}
         if self.hidden_size_per_layer_input:
             assert self.num_kv_shared_layers > 0, 'not support'
             if decoder_input is None:
@@ -502,11 +508,10 @@ class Gemma4TextGPTModel(GPTModel):
                 per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
                 per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
                 per_layer_inputs = scatter_to_tensor_model_parallel_region(per_layer_inputs)
-                shared_kv_states = {}
             extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
-            extra_block_kwargs['shared_kv_states'] = shared_kv_states
         else:
             assert self.num_kv_shared_layers == 0, 'not support'
+        extra_block_kwargs['shared_kv_states'] = shared_kv_states
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         hidden_states = super().forward(*args, **kwargs)
         if self.hidden_size_per_layer_input and not self.post_process:
@@ -680,7 +685,8 @@ class Gemma4TransformerBlock(TransformerBlock):
     def _layer_forward(self, layer, hidden_states, **kwargs):
         layer_number = layer.layer_number - 1
         per_layer_inputs = kwargs.pop('per_layer_inputs', None)
-        kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
+        if per_layer_inputs is not None:
+            kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
         layer_type = self.config.hf_config.text_config.layer_types[layer_number]
         kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][layer_type]
         return super()._layer_forward(layer, hidden_states, **kwargs)
