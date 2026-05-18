@@ -363,23 +363,28 @@ class Gemma4Bridge(MultimodalGPTBridge):
     additional_dim1_keys = {'per_layer_projection'}
 
     def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore):
-        self._set_state_dict(
-            mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore, _check_mg_param=False)
-        self._set_state_dict(
-            mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore, _check_mg_param=False)
+        is_kv_shared_layer = self._get_is_kv_shared_layer(mg_attn, to_mcore)
+        self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore)
+        if not is_kv_shared_layer:
+            self._set_state_dict(mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore)
 
-    def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool):
+    def _get_is_kv_shared_layer(self, mg_attn, to_mcore):
         is_kv_shared_layer = False if mg_attn is None else mg_attn.is_kv_shared_layer
-        if not to_mcore:
-            is_kv_shared_layer = torch.tensor([is_kv_shared_layer], dtype=torch.bool, device='cuda')
-            if self.pp_size > 1:
-                dist.all_reduce(is_kv_shared_layer, group=self.pp_group, op=dist.ReduceOp.MAX)
-            is_kv_shared_layer = is_kv_shared_layer.item()
+        return self._reduce_tensor_pp_group(is_kv_shared_layer, to_mcore)
+
+    def _get_head_dim(self, mg_attn, to_mcore):
+        head_dim = 0 if mg_attn is None else mg_attn.head_dim
+        return self._reduce_tensor_pp_group(head_dim, to_mcore)
+
+    def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
+        is_kv_shared_layer = self._get_is_kv_shared_layer(mg_attn, to_mcore)
+        kwargs['kv_channels'] = self._get_head_dim(mg_attn, to_mcore)
+        assert kwargs['kv_channels'] > 0
         if is_kv_shared_layer:
             self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'q_proj.weight', to_mcore)
             return hf_state_dict
         else:
-            return super()._set_qkv(mg_attn, hf_state_dict, to_mcore)
+            return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         hf_prefix = f'{hf_prefix}{layer_idx}.'
@@ -393,8 +398,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 'post_attention_layernorm', 'post_feedforward_layernorm', 'per_layer_input_gate',
                 'per_layer_projection', 'post_per_layer_input_norm'
         ]:
-            self._set_state_dict(
-                mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore, _check_mg_param=False)
+            self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
         self._set_state_dict(mg_layer, 'layer_scalar', hf_state_dict, 'layer_scalar', to_mcore)
         if to_mcore:
             hf_state_dict = {}
@@ -414,6 +418,7 @@ class Gemma4TextGPTModel(GPTModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.num_query_groups_per_partition = self.decoder.layers[0].self_attention.num_query_groups_per_partition
         text_config = self.config.hf_config.text_config
         self.text_config = text_config
         self.unique_layer_types = set(text_config.layer_types)
@@ -510,42 +515,53 @@ class Gemma4TextGPTModel(GPTModel):
         return hidden_states
 
     def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
-        per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], -1)
+        per_layer_inputs = per_layer_inputs.view(*hidden_states.shape[:2], -1)
         hidden_states = torch.concat([hidden_states, per_layer_inputs], dim=-1)
-        flag = per_layer_inputs.new_zeros(*per_layer_inputs.shape[:2], 1)
+        flag = per_layer_inputs.new_zeros(*hidden_states.shape[:2], 1)
         if 'sliding_attention' in shared_kv_states:
             flag[0] = 1
             sliding_states = torch.concat(shared_kv_states['sliding_attention'], -1)
-            sliding_states = sliding_states.view(*sliding_states.shape[:2], -1)
+            sliding_states = sliding_states.view(*hidden_states.shape[:2], -1)
             hidden_states = torch.concat([hidden_states, sliding_states], dim=-1)
         if 'full_attention' in shared_kv_states:
             flag[1] = 1
             full_states = torch.concat(shared_kv_states['full_attention'], -1)
-            full_states = full_states.view(*full_states.shape[:2], -1)
+            full_states = full_states.view(*hidden_states.shape[:2], -1)
             hidden_states = torch.concat([hidden_states, full_states], dim=-1)
         hidden_states = torch.concat([hidden_states, flag], dim=-1)
         return hidden_states
 
     def unpack_pp_input(self):
+        tp_size = self.config.tensor_model_parallel_size
         shared_kv_states = {}
         input_tensor = self.get_input_tensor()
+        self.num_query_groups_per_partition
+        sequence_len = input_tensor.shape[0] * tp_size if self.config.sequence_parallel else input_tensor.shape[0]
         input_tensor, flag = input_tensor.split([input_tensor.shape[-1] - 1, 1], dim=-1)
-        per_layer_inputs_dim = self.hidden_size_per_layer_input * self.config.num_layers
-        if flag[1] == 1:
-            full_head_dim = self.text_config.global_head_dim
-            input_tensor, full_states = input_tensor.split(
-                [input_tensor.shape[-1] - full_head_dim * 2, full_head_dim * 2], dim=-1)
-            shared_kv_states['full_attention'] = full_states[:, :, None].split([full_head_dim, full_head_dim], -1)
-        if flag[0] == 1:
+        flag = flag.detach()
+        per_layer_inputs_shape = [
+            sequence_len, input_tensor.shape[1], self.config.num_layers, self.hidden_size_per_layer_input // tp_size
+        ]
+        full_head_dim = self.text_config.global_head_dim
+        full_states_shape = per_layer_inputs_shape[:2] + [self.num_query_groups_per_partition, full_head_dim * 2]
+        sliding_states_shape = full_states_shape[:3] + [self.config.kv_channels * 2]
+        per_layer_inputs_dim = math.prod(per_layer_inputs_shape) // math.prod(input_tensor.shape[:2])
+        full_states_dim = math.prod(full_states_shape) // math.prod(input_tensor.shape[:2])
+        sliding_states_dim = math.prod(sliding_states_shape) // math.prod(input_tensor.shape[:2])
+        if flag[1] != 0:
+            input_tensor, full_states = input_tensor.split([input_tensor.shape[-1] - full_states_dim, full_states_dim],
+                                                           dim=-1)
+            full_states = full_states.reshape(*full_states_shape)
+            shared_kv_states['full_attention'] = full_states.chunk(2, -1)
+        if flag[0] != 0:
             input_tensor, sliding_states = input_tensor.split(
-                [input_tensor.shape[-1] - self.config.kv_channels * 2, self.config.kv_channels * 2], dim=-1)
-            shared_kv_states['sliding_attention'] = sliding_states[:, :, None].split(
-                [self.config.kv_channels, self.config.kv_channels], -1)
+                [input_tensor.shape[-1] - sliding_states_dim, sliding_states_dim], dim=-1)
+            sliding_states = sliding_states.reshape(*sliding_states_shape)
+            shared_kv_states['sliding_attention'] = sliding_states.chunk(2, -1)
         input_tensor, per_layer_inputs = input_tensor.split(
             [input_tensor.shape[-1] - per_layer_inputs_dim, per_layer_inputs_dim], dim=-1)
         self.set_input_tensor(input_tensor)
-        per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], self.config.num_layers,
-                                                 self.hidden_size_per_layer_input)
+        per_layer_inputs = per_layer_inputs.reshape(*per_layer_inputs_shape)
         return per_layer_inputs, shared_kv_states
 
     def _forward_output_layer(self, hidden_states, *args, **kwargs):

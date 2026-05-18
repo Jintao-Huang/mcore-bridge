@@ -346,7 +346,7 @@ class GPTBridge:
             del output
         return tensor
 
-    def _broadcast_ep_pp(self, tensor, is_expert):
+    def _broadcast_ep_pp(self, tensor, is_expert, is_scalar: bool = False):
         pp_group = self.ep_pp_group if is_expert else self.pp_group
         pp_size = self.ep_pp_size if is_expert else self.pp_size
         pp_rank = self.ep_pp_rank if is_expert else self.pp_rank
@@ -360,7 +360,8 @@ class GPTBridge:
             dtype_mapping_r = {v: k for k, v in dtype_mapping.items()}
             if tensor is None:
                 dist.broadcast(meta_data, src=src_rank, group=pp_group)
-                assert meta_data[0].item() > 0, f'meta_data: {meta_data}'
+                if not is_scalar:
+                    assert meta_data[0].item() > 0, f'meta_data: {meta_data}'
                 shape = meta_data[1:1 + meta_data[0]].tolist()
                 dtype = dtype_mapping_r[meta_data[-1].item()]
                 tensor = torch.empty(shape, device='cuda', dtype=dtype)
@@ -383,7 +384,10 @@ class GPTBridge:
         # tp/etp
         mg_scale_inv = None
         tensor = mg_weight
-        if tensor is not None:
+        is_scalar = False
+        if isinstance(tensor, torch.Tensor) and tensor.ndim == 0:
+            is_scalar = True
+        if tensor is not None and not is_scalar:
             if not isinstance(tensor, (list, tuple)):
                 tensor = [tensor]
             if self._is_fp8_param(tensor[0]):
@@ -392,8 +396,7 @@ class GPTBridge:
                     for t in tensor
                 ]
                 tensor = [t._rowwise_data for t in tensor]
-        del mg_weight
-        if tensor is not None:
+            del mg_weight
             assert isinstance(tensor, (list, tuple)), f'mg_key: {mg_key}'
             tensor = torch.concat(tensor, dim=0)
             if mg_scale_inv is not None:
@@ -407,7 +410,7 @@ class GPTBridge:
                 mg_scale_inv = mg_scale_inv.view(num_local_experts * 2, -1, mg_scale_inv.shape[-1])
 
         tensor = self._all_gather_tp(tensor, tp_dim, is_expert)
-        tensor = self._broadcast_ep_pp(tensor, is_expert)
+        tensor = self._broadcast_ep_pp(tensor, is_expert, is_scalar=is_scalar)
         if tensor.dtype == torch.uint8:
             mg_scale_inv = self._all_gather_tp(mg_scale_inv, tp_dim, is_expert)
             mg_scale_inv = self._broadcast_ep_pp(mg_scale_inv, is_expert)
@@ -443,8 +446,7 @@ class GPTBridge:
                         to_mcore: bool,
                         *,
                         offset: float = 0,
-                        is_expert: bool = False,
-                        _check_mg_param: bool = True):
+                        is_expert: bool = False):
         if '.' in mg_key:
             module_key, param_key = mg_key.rsplit('.', 1)
         else:
@@ -493,10 +495,7 @@ class GPTBridge:
                 mg_param = deep_getattr(sub_module, param_key)
             if to_mcore:
                 if mg_param is None:
-                    if _check_mg_param:
-                        raise ValueError(f'mg_module: {mg_module}, mg_key: {mg_key}')
-                    else:
-                        return
+                    raise ValueError(f'mg_module: {mg_module}, mg_key: {mg_key}')
                 hf_weight = hf_state_dict[hf_key].load()
                 if module_key in {
                         'embedding.word_embeddings', 'output_layer'
@@ -534,7 +533,16 @@ class GPTBridge:
             return state_dict
         return {k: v for k, v in state_dict.items() if k.startswith(prefix)}
 
-    def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool):
+    def _reduce_tensor_pp_group(self, tensor, to_mcore, dtype=torch.long, op=dist.ReduceOp.MAX):
+        if to_mcore:
+            return tensor
+        tensor = torch.tensor([tensor], dtype=dtype, device='cuda')
+        if self.pp_size > 1:
+            dist.all_reduce(tensor, group=self.pp_group, op=op)
+        tensor = tensor.item()
+        return tensor
+
+    def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
         config = self.config
         num_query_groups = (
             config.num_query_groups if config.num_query_groups is not None else config.num_attention_heads)
@@ -577,10 +585,13 @@ class GPTBridge:
                 self._set_weight(
                     mg_attn.linear_qkv.weight, linear_qkv_weight, 'linear_qkv.weight', hf_scale_inv=qkv_scale_inv)
         else:
-            q_dim = self.config.kv_channels * self.config.num_attention_heads // self.config.num_query_groups
+            kv_channels = kwargs.get('kv_channels')
+            if kv_channels is None:
+                kv_channels = self.config.kv_channels
+            q_dim = kv_channels * self.config.num_attention_heads // self.config.num_query_groups
             if self.config.attention_output_gate:
                 q_dim *= 2
-            kv_dim = self.config.kv_channels
+            kv_dim = kv_channels
             q_block = q_dim // self.fp8_block_size
             kv_block = kv_dim // self.fp8_block_size
             is_lora = False if mg_attn is None else isinstance(mg_attn.linear_qkv,
