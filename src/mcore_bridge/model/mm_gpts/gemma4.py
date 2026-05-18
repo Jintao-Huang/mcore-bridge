@@ -134,35 +134,23 @@ class Gemma4SelfAttention(SelfAttention):
         # Layer type / sliding attention
         self.layer_type = text_config.layer_types[layer_idx]
         self.is_sliding = self.layer_type == 'sliding_attention'
-        self.sliding_window = text_config.sliding_window if self.is_sliding else None
 
         # Head dim: global layers may use a different head dim than sliding ones
         self.head_dim = (
             text_config.global_head_dim
             if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
 
-        # Alternative attention (k == v) for global layers when `attention_k_eq_v` is set
         self.use_alternative_attention = (text_config.attention_k_eq_v and not self.is_sliding)
         num_key_value_heads = (
             text_config.num_global_key_value_heads
             if self.use_alternative_attention else text_config.num_key_value_heads)
-        self.num_key_value_groups = text_config.num_attention_heads // num_key_value_heads
-
         # Shared KV across the trailing layers
-        num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
-        first_kv_shared_layer_idx = config.num_layers - num_kv_shared_layers
+        self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
+        first_kv_shared_layer_idx = config.num_layers - self.num_kv_shared_layers
         self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
         prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
-        if self.is_kv_shared_layer:
-            # For shared layers, reuse KV from the last non-shared layer of the same type
-            self.kv_shared_layer_index = (len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
-            self.store_full_length_kv = False
-        else:
-            self.kv_shared_layer_index = None
-            # Non-shared layers that are the last of their type in `prev_layers` must keep full KV
-            self.store_full_length_kv = (
-                self.layer_type in prev_layers
-                and layer_idx == len(prev_layers) - 1 - prev_layers[::-1].index(self.layer_type))
+        self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == len(
+            prev_layers) - 1 - prev_layers[::-1].index(text_config.layer_types[layer_idx])
 
         orig_kv_channels = config.kv_channels
         orig_num_query_groups = config.num_query_groups
@@ -178,11 +166,13 @@ class Gemma4SelfAttention(SelfAttention):
             config.num_query_groups = orig_num_query_groups
             submodules.k_layernorm = orig_k_layernorm
 
-        if self.is_kv_shared_layer:
-            self.linear_qkv_out_dim = self.query_projection_size
+        if self.is_kv_shared_layer or self.use_alternative_attention:
+            linear_qkv_dim = self.query_projection_size
+            if not self.is_kv_shared_layer:
+                linear_qkv_dim += self.kv_projection_size
             self.linear_qkv = submodules.linear_qkv(
                 self.config.hidden_size,
-                self.linear_qkv_out_dim,
+                linear_qkv_dim,
                 config=self.config,
                 init_method=self.config.init_method,
                 gather_output=False,
@@ -290,27 +280,21 @@ class Gemma4SelfAttention(SelfAttention):
             query = mixed_qkv
             key, value = shared_kv_states[self.layer_type]
         else:
+            kv_heads_per_group = 1 if self.use_alternative_attention else 2
             num_query_heads_per_group = (self.num_attention_heads_per_partition // self.num_query_groups_per_partition)
-            # If no output gate: [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
-            # If have output gate: [sq, b, hp] --> [sq, b, ng, (2 * np/ng + 2) * hn]
             new_tensor_shape = mixed_qkv.size()[:-1] + (
                 self.num_query_groups_per_partition,
-                (num_query_heads_per_group + 2) * self.hidden_size_per_attention_head,
+                (num_query_heads_per_group + kv_heads_per_group) * self.hidden_size_per_attention_head,
             )
             mixed_qkv = mixed_qkv.view(*new_tensor_shape)
-            # If no output gate: [sq, b, ng, (np/ng + 2) * hn]
-            # --> [sq, b, ng, np/ng * hn], None, [sq, b, ng, hn], [sq, b, ng, hn]
-            split_arg_list = [
-                num_query_heads_per_group * self.hidden_size_per_attention_head,
-                self.hidden_size_per_attention_head,
-                self.hidden_size_per_attention_head,
-            ]
+            split_arg_list = [num_query_heads_per_group * self.hidden_size_per_attention_head
+                              ] + [self.hidden_size_per_attention_head] * kv_heads_per_group
             if SplitAlongDim is not None:
-                (query, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
+                (query, key, value) = SplitAlongDim(mixed_qkv, len(split_arg_list), split_arg_list)
             else:
                 (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
-                key = self.k_layernorm(key)
-                value = self.v_norm(value)
+            key = self.k_layernorm(key)
+            value = self.v_norm(value)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
         if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
@@ -362,28 +346,38 @@ class Gemma4Bridge(MultimodalGPTBridge):
     additional_dim0_keys = {'embed_tokens_per_layer', 'per_layer_input_gate', 'per_layer_model_projection'}
     additional_dim1_keys = {'per_layer_projection'}
 
-    def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore):
-        is_kv_shared_layer = self._get_is_kv_shared_layer(mg_attn, to_mcore)
+    def __init__(self, config: ModelConfig):
+        super().__init__(config)
+        self.text_config = config.hf_config.text_config
+        self.hidden_size_per_layer_input = self.text_config.hidden_size_per_layer_input
+
+    def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore, **kwargs):
+        layer_idx = kwargs['layer_idx']
+        is_kv_shared_layer = self._get_is_kv_shared_layer(layer_idx)
         self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore)
         if not is_kv_shared_layer:
             self._set_state_dict(mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore)
 
-    def _get_is_kv_shared_layer(self, mg_attn, to_mcore):
-        is_kv_shared_layer = False if mg_attn is None else mg_attn.is_kv_shared_layer
-        return self._reduce_tensor_pp_group(is_kv_shared_layer, to_mcore)
-
-    def _get_head_dim(self, mg_attn, to_mcore):
-        head_dim = 0 if mg_attn is None else mg_attn.head_dim
-        return self._reduce_tensor_pp_group(head_dim, to_mcore)
+    def _get_is_kv_shared_layer(self, layer_idx):
+        text_config = self.text_config
+        num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
+        first_kv_shared_layer_idx = self.config.num_layers - num_kv_shared_layers
+        is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+        return is_kv_shared_layer
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
-        is_kv_shared_layer = self._get_is_kv_shared_layer(mg_attn, to_mcore)
-        kwargs['kv_channels'] = self._get_head_dim(mg_attn, to_mcore)
-        assert kwargs['kv_channels'] > 0
+        text_config = self.text_config
+        layer_idx = kwargs['layer_idx']
+        is_sliding = text_config.layer_types[layer_idx] == 'sliding_attention'
+        head_dim = (
+            text_config.global_head_dim if not is_sliding and text_config.global_head_dim else text_config.head_dim)
+        is_kv_shared_layer = self._get_is_kv_shared_layer(layer_idx)
         if is_kv_shared_layer:
             self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'q_proj.weight', to_mcore)
             return hf_state_dict
         else:
+            kwargs['kv_channels'] = head_dim
+            kwargs['attention_k_eq_v'] = text_config.attention_k_eq_v and not is_sliding
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
@@ -394,11 +388,11 @@ class Gemma4Bridge(MultimodalGPTBridge):
             hf_state_dict = {}
         hf_state_dict.update(self._set_layer_attn(mg_layer, hf_state_dict, layer_idx, to_mcore))
         hf_state_dict.update(self._set_layer_mlp(mg_layer, hf_state_dict, layer_idx, to_mcore))
-        for key in [
-                'post_attention_layernorm', 'post_feedforward_layernorm', 'per_layer_input_gate',
-                'per_layer_projection', 'post_per_layer_input_norm'
-        ]:
+        for key in ['post_attention_layernorm', 'post_feedforward_layernorm']:
             self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
+        if self.hidden_size_per_layer_input:
+            for key in ['per_layer_input_gate', 'per_layer_projection', 'post_per_layer_input_norm']:
+                self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
         self._set_state_dict(mg_layer, 'layer_scalar', hf_state_dict, 'layer_scalar', to_mcore)
         if to_mcore:
             hf_state_dict = {}
@@ -409,9 +403,10 @@ class Gemma4Bridge(MultimodalGPTBridge):
     def _set_word_embeddings(self, mg_model, hf_state_dict, to_mcore):
         lm_model = getattr(mg_model, 'language_model') if self.is_multimodal else mg_model
         self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, self.hf_embed_key, to_mcore)
-        for key in ['embed_tokens_per_layer', 'per_layer_model_projection', 'per_layer_projection_norm']:
-            self._set_state_dict(lm_model, f'{key}.weight', hf_state_dict, f'model.language_model.{key}.weight',
-                                 to_mcore)
+        if self.hidden_size_per_layer_input:
+            for key in ['embed_tokens_per_layer', 'per_layer_model_projection', 'per_layer_projection_norm']:
+                self._set_state_dict(lm_model, f'{key}.weight', hf_state_dict, f'model.language_model.{key}.weight',
+                                     to_mcore)
 
 
 class Gemma4TextGPTModel(GPTModel):
@@ -421,6 +416,7 @@ class Gemma4TextGPTModel(GPTModel):
         self.num_query_groups_per_partition = self.decoder.layers[0].self_attention.num_query_groups_per_partition
         text_config = self.config.hf_config.text_config
         self.text_config = text_config
+        self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
         self.unique_layer_types = set(text_config.layer_types)
         self.hidden_size_per_layer_input = text_config.hidden_size_per_layer_input
         self.final_logit_softcapping = text_config.final_logit_softcapping
@@ -490,6 +486,7 @@ class Gemma4TextGPTModel(GPTModel):
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
         decoder_input = kwargs.get('decoder_input')
         if self.hidden_size_per_layer_input:
+            assert self.num_kv_shared_layers > 0, 'not support'
             if decoder_input is None:
                 per_layer_inputs, shared_kv_states = self.unpack_pp_input()
             else:
@@ -506,11 +503,13 @@ class Gemma4TextGPTModel(GPTModel):
                 per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
                 per_layer_inputs = scatter_to_tensor_model_parallel_region(per_layer_inputs)
                 shared_kv_states = {}
-        extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
-        extra_block_kwargs['shared_kv_states'] = shared_kv_states
+            extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
+            extra_block_kwargs['shared_kv_states'] = shared_kv_states
+        else:
+            assert self.num_kv_shared_layers == 0, 'not support'
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         hidden_states = super().forward(*args, **kwargs)
-        if not self.post_process:
+        if self.hidden_size_per_layer_input and not self.post_process:
             hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
         return hidden_states
 

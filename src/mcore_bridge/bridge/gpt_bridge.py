@@ -346,7 +346,7 @@ class GPTBridge:
             del output
         return tensor
 
-    def _broadcast_ep_pp(self, tensor, is_expert, is_scalar: bool = False):
+    def _broadcast_ep_pp(self, tensor, is_expert):
         pp_group = self.ep_pp_group if is_expert else self.pp_group
         pp_size = self.ep_pp_size if is_expert else self.pp_size
         pp_rank = self.ep_pp_rank if is_expert else self.pp_rank
@@ -360,8 +360,6 @@ class GPTBridge:
             dtype_mapping_r = {v: k for k, v in dtype_mapping.items()}
             if tensor is None:
                 dist.broadcast(meta_data, src=src_rank, group=pp_group)
-                if not is_scalar:
-                    assert meta_data[0].item() > 0, f'meta_data: {meta_data}'
                 shape = meta_data[1:1 + meta_data[0]].tolist()
                 dtype = dtype_mapping_r[meta_data[-1].item()]
                 tensor = torch.empty(shape, device='cuda', dtype=dtype)
@@ -384,9 +382,7 @@ class GPTBridge:
         # tp/etp
         mg_scale_inv = None
         tensor = mg_weight
-        is_scalar = False
-        if isinstance(tensor, torch.Tensor) and tensor.ndim == 0:
-            is_scalar = True
+        is_scalar = isinstance(tensor, torch.Tensor) and tensor.ndim == 0
         if tensor is not None and not is_scalar:
             if not isinstance(tensor, (list, tuple)):
                 tensor = [tensor]
@@ -410,7 +406,7 @@ class GPTBridge:
                 mg_scale_inv = mg_scale_inv.view(num_local_experts * 2, -1, mg_scale_inv.shape[-1])
 
         tensor = self._all_gather_tp(tensor, tp_dim, is_expert)
-        tensor = self._broadcast_ep_pp(tensor, is_expert, is_scalar=is_scalar)
+        tensor = self._broadcast_ep_pp(tensor, is_expert)
         if tensor.dtype == torch.uint8:
             mg_scale_inv = self._all_gather_tp(mg_scale_inv, tp_dim, is_expert)
             mg_scale_inv = self._broadcast_ep_pp(mg_scale_inv, is_expert)
@@ -547,17 +543,18 @@ class GPTBridge:
         num_query_groups = (
             config.num_query_groups if config.num_query_groups is not None else config.num_attention_heads)
         hidden_size_block = config.hidden_size // self.fp8_block_size
+        attention_k_eq_v = kwargs.get('attention_k_eq_v', False)
+        kv_proj_list = ['k_proj'] if attention_k_eq_v else ['k_proj', 'v_proj']
         if to_mcore:
             if isinstance(mg_attn.linear_qkv, LoraParallelLinear):
                 lora_A = hf_state_dict['q_proj.lora_A.weight'].load()
-                assert (lora_A == hf_state_dict['k_proj.lora_A.weight'].load()).all() and (
-                    lora_A == hf_state_dict['v_proj.lora_A.weight'].load()
-                ).all(), 'Need to ensure QKV\'s lora_A are consistent'
+                assert all((lora_A == hf_state_dict[f'{k}.lora_A.weight'].load()).all()
+                           for k in kv_proj_list), 'Need to ensure QKV\'s lora_A are consistent'
                 q_lora_B = hf_state_dict['q_proj.lora_B.weight'].load()
                 lora_B = torch.cat([
                     q_lora_B.reshape((num_query_groups, -1, q_lora_B.shape[-1])),
-                    hf_state_dict['k_proj.lora_B.weight'].load().reshape((num_query_groups, -1, q_lora_B.shape[-1])),
-                    hf_state_dict['v_proj.lora_B.weight'].load().reshape((num_query_groups, -1, q_lora_B.shape[-1])),
+                    *(hf_state_dict[f'{k}.lora_B.weight'].load().reshape((num_query_groups, -1, q_lora_B.shape[-1]))
+                      for k in kv_proj_list),
                 ],
                                    dim=1).reshape((-1, q_lora_B.shape[-1]))
                 self._set_weight(mg_attn.linear_qkv.lora_A[self._adapter_name].weight, lora_A,
@@ -566,20 +563,15 @@ class GPTBridge:
                                  'linear_qkv.lora_B.weight')
             elif not self._peft_format:
                 linear_qkv_weight = torch.cat([
-                    hf_state_dict['q_proj.weight'].load().reshape((num_query_groups, -1, config.hidden_size)),
-                    hf_state_dict['k_proj.weight'].load().reshape((num_query_groups, -1, config.hidden_size)),
-                    hf_state_dict['v_proj.weight'].load().reshape((num_query_groups, -1, config.hidden_size)),
+                    hf_state_dict[f'{k}.weight'].load().reshape((num_query_groups, -1, config.hidden_size))
+                    for k in ['q_proj'] + kv_proj_list
                 ],
                                               dim=1).reshape((-1, config.hidden_size))
                 qkv_scale_inv = None
                 if 'q_proj.weight_scale_inv' in hf_state_dict:
                     qkv_scale_inv = torch.cat([
-                        hf_state_dict['q_proj.weight_scale_inv'].load().reshape(
-                            (num_query_groups, -1, hidden_size_block)),
-                        hf_state_dict['k_proj.weight_scale_inv'].load().reshape(
-                            (num_query_groups, -1, hidden_size_block)),
-                        hf_state_dict['v_proj.weight_scale_inv'].load().reshape(
-                            (num_query_groups, -1, hidden_size_block)),
+                        hf_state_dict[f'{k}.weight_scale_inv'].load().reshape((num_query_groups, -1, hidden_size_block))
+                        for k in ['q_proj'] + kv_proj_list
                     ],
                                               dim=1).reshape((-1, hidden_size_block))
                 self._set_weight(
@@ -607,15 +599,16 @@ class GPTBridge:
                     None if mg_attn is None else mg_attn.linear_qkv.lora_B[self._adapter_name].weight.data,
                     f'linear_qkv.lora_B.{self._adapter_name}.weight')
                 if lora_A is not None:
-                    self._peft_target_modules.update({'q_proj', 'k_proj', 'v_proj'})
-                    for key in ['q_proj', 'k_proj', 'v_proj']:
+                    self._peft_target_modules.update({'q_proj'} | set(kv_proj_list))
+                    for key in ['q_proj'] + kv_proj_list:
                         hf_state_dict[f'{key}.lora_A.weight'] = lora_A.clone()
                     lora_B = lora_B.reshape((num_query_groups, -1, lora_B.shape[-1]))
                     hf_state_dict['q_proj.lora_B.weight'] = lora_B[:, :q_dim, :].reshape(-1, lora_B.shape[-1]).clone()
-                    hf_state_dict['k_proj.lora_B.weight'] = lora_B[:,
-                                                                   q_dim:-kv_dim, :].reshape(-1,
-                                                                                             lora_B.shape[-1]).clone()
-                    hf_state_dict['v_proj.lora_B.weight'] = lora_B[:, -kv_dim:, :].reshape(-1, lora_B.shape[-1]).clone()
+                    hf_state_dict['k_proj.lora_B.weight'] = lora_B[:, q_dim:q_dim + kv_dim:, :].reshape(
+                        -1, lora_B.shape[-1]).clone()
+                    if not attention_k_eq_v:
+                        hf_state_dict['v_proj.lora_B.weight'] = lora_B[:, q_dim + kv_dim:, :].reshape(
+                            -1, lora_B.shape[-1]).clone()
             elif not self._peft_format:
                 mg_attn_weight, scale_inv = self._get_weight(
                     None if mg_attn is None else mg_attn.linear_qkv.weight.data, 'linear_qkv.weight')
@@ -623,27 +616,27 @@ class GPTBridge:
                     mg_attn_weight = mg_attn_weight.reshape((num_query_groups, -1, config.hidden_size))
                     hf_state_dict['q_proj.weight'] = mg_attn_weight[:, :q_dim, :].reshape(-1,
                                                                                           config.hidden_size).clone()
-                    hf_state_dict['k_proj.weight'] = mg_attn_weight[:, q_dim:-kv_dim, :].reshape(
+                    hf_state_dict['k_proj.weight'] = mg_attn_weight[:, q_dim:q_dim + kv_dim, :].reshape(
                         -1, config.hidden_size).clone()
-                    hf_state_dict['v_proj.weight'] = mg_attn_weight[:, -kv_dim:, :].reshape(-1,
-                                                                                            config.hidden_size).clone()
+                    if not attention_k_eq_v:
+                        hf_state_dict['v_proj.weight'] = mg_attn_weight[:, q_dim + kv_dim:, :].reshape(
+                            -1, config.hidden_size).clone()
                 if scale_inv is not None:
                     scale_inv = scale_inv.reshape((num_query_groups, -1, hidden_size_block))
                     hf_state_dict['q_proj.weight_scale_inv'] = scale_inv[:, :q_block, :].reshape(
                         -1, hidden_size_block).clone()
-                    hf_state_dict['k_proj.weight_scale_inv'] = scale_inv[:, q_block:-kv_block, :].reshape(
+                    hf_state_dict['k_proj.weight_scale_inv'] = scale_inv[:, q_block:q_block + kv_block:, :].reshape(
                         -1, hidden_size_block).clone()
-                    hf_state_dict['v_proj.weight_scale_inv'] = scale_inv[:, -kv_block:, :].reshape(
-                        -1, hidden_size_block).clone()
+                    if not attention_k_eq_v:
+                        dict['v_proj.weight_scale_inv'] = scale_inv[:, q_block + kv_block:, :].reshape(
+                            -1, hidden_size_block).clone()
                 del mg_attn_weight
 
         # Copy bias
         if (config.add_bias_linear or config.add_qkv_bias) and not self._peft_format:
             if to_mcore:
                 linear_qkv_bias = torch.cat([
-                    hf_state_dict['q_proj.bias'].load().reshape((num_query_groups, -1)),
-                    hf_state_dict['k_proj.bias'].load().reshape((num_query_groups, -1)),
-                    hf_state_dict['v_proj.bias'].load().reshape((num_query_groups, -1)),
+                    hf_state_dict[f'{k}.bias'].load().reshape((num_query_groups, -1)) for k in ['q_proj'] + kv_proj_list
                 ],
                                             dim=1).reshape(-1)
                 self._set_weight(mg_attn.linear_qkv.bias, linear_qkv_bias, 'linear_qkv.bias')
@@ -653,8 +646,9 @@ class GPTBridge:
                 if mg_attn_bias is not None:
                     mg_attn_bias = mg_attn_bias.reshape((num_query_groups, -1))
                     hf_state_dict['q_proj.bias'] = mg_attn_bias[:, :q_dim].reshape(-1).clone()
-                    hf_state_dict['k_proj.bias'] = mg_attn_bias[:, q_dim:-kv_dim].reshape(-1).clone()
-                    hf_state_dict['v_proj.bias'] = mg_attn_bias[:, -kv_dim:].reshape(-1).clone()
+                    hf_state_dict['k_proj.bias'] = mg_attn_bias[:, q_dim:q_dim + kv_dim:].reshape(-1).clone()
+                    if not attention_k_eq_v:
+                        hf_state_dict['v_proj.bias'] = mg_attn_bias[:, q_dim + kv_dim:].reshape(-1).clone()
         return hf_state_dict
 
     def _set_attn_state(self, mg_attn, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
@@ -663,21 +657,21 @@ class GPTBridge:
         else:
             hf_state_dict = {}
         config = self.config
-        hf_state_dict.update(self._set_qkv(mg_attn, hf_state_dict, to_mcore))
+        hf_state_dict.update(self._set_qkv(mg_attn, hf_state_dict, to_mcore, layer_idx=layer_idx))
         self._set_state_dict(mg_attn, 'linear_proj.weight', hf_state_dict, f'{self.hf_o_proj_key}.weight', to_mcore)
         if config.add_bias_linear:
             self._set_state_dict(mg_attn, 'linear_proj.bias', hf_state_dict, f'{self.hf_o_proj_key}.bias', to_mcore)
         if getattr(config, 'softmax_type', 'vanilla') == 'learnable':
             self._set_state_dict(mg_attn, 'core_attention.softmax_offset', hf_state_dict, 'sinks', to_mcore)
         if config.qk_layernorm:
-            self._set_qk_layernorm(mg_attn, hf_state_dict, to_mcore)
+            self._set_qk_layernorm(mg_attn, hf_state_dict, to_mcore, layer_idx=layer_idx)
         if to_mcore:
             hf_state_dict = {}
         else:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
 
-    def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore):
+    def _set_qk_layernorm(self, mg_attn, hf_state_dict, to_mcore, **kwargs):
         self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore)
         self._set_state_dict(mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore)
 
