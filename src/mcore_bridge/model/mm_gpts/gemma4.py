@@ -519,12 +519,34 @@ class Gemma4TextGPTModel(GPTModel):
             assert self.num_kv_shared_layers == 0, 'not support'
         extra_block_kwargs['shared_kv_states'] = shared_kv_states
         kwargs['extra_block_kwargs'] = extra_block_kwargs
+        attention_mask = kwargs.get('attention_mask')
+        kwargs['attention_mask'] = {'sliding_attention': attention_mask, 'full_attention': attention_mask}
         if self.text_config.use_bidirectional_attention == 'vision':
-            pass
+            kwargs['attention_mask']['sliding_attention'] = self._create_sliding_attention_mask(
+                kwargs['attention_mask'], mm_token_type_ids)
         hidden_states = super().forward(*args, **kwargs)
         if self.hidden_size_per_layer_input and not self.post_process:
             hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
         return hidden_states
+
+    def _create_sliding_attention_mask(self, attention_mask, mm_token_type_ids):
+        window_size = self.text_config.sliding_window - 1
+        seq_len = attention_mask.shape[-1]
+
+        window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device='cuda')
+        window_mask = ~torch.triu(window_mask, diagonal=-window_size)
+
+        is_vision = mm_token_type_ids > 0
+        is_prev_vision = torch.roll(is_vision, shifts=1, dims=-1)
+        is_prev_vision[:, 0] = False
+        vision_group_ids = torch.cumsum((is_vision & ~is_prev_vision).int(), dim=1) - 1
+        vision_group_ids = torch.where(is_vision, vision_group_ids,
+                                    torch.full_like(vision_group_ids, -1))
+
+        q_group = vision_group_ids.unsqueeze(1).unsqueeze(-1)
+        k_group = vision_group_ids.unsqueeze(1).unsqueeze(-2)
+        same_vision_group = (q_group == k_group) & (q_group >= 0) & (k_group >= 0)
+        return attention_mask | window_mask | ~same_vision_group
 
     def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
         per_layer_inputs = per_layer_inputs.view(*hidden_states.shape[:2], -1)
@@ -697,6 +719,7 @@ class Gemma4TransformerBlock(TransformerBlock):
             kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
         layer_type = self.config.hf_config.text_config.layer_types[layer_number]
         kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][layer_type]
+        kwargs['attention_mask'] = kwargs['attention_mask'][layer_type]
         return super()._layer_forward(layer, hidden_states, **kwargs)
 
 
