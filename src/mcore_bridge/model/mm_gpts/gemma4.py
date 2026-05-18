@@ -141,7 +141,7 @@ class Gemma4SelfAttention(SelfAttention):
             if not self.is_sliding and text_config.global_head_dim else text_config.head_dim)
 
         self.use_alternative_attention = (text_config.attention_k_eq_v and not self.is_sliding)
-        num_key_value_heads = (
+        self.num_key_value_heads = (
             text_config.num_global_key_value_heads
             if self.use_alternative_attention else text_config.num_key_value_heads)
         # Shared KV across the trailing layers
@@ -156,7 +156,7 @@ class Gemma4SelfAttention(SelfAttention):
         orig_num_query_groups = config.num_query_groups
         orig_k_layernorm = submodules.k_layernorm
         config.kv_channels = self.head_dim
-        config.num_query_groups = num_key_value_heads
+        config.num_query_groups = self.num_key_value_heads
         if self.is_kv_shared_layer:
             submodules.k_layernorm = IdentityOp
         try:
@@ -382,7 +382,11 @@ class Gemma4Bridge(MultimodalGPTBridge):
             return hf_state_dict
         else:
             kwargs['kv_channels'] = head_dim
-            kwargs['attention_k_eq_v'] = text_config.attention_k_eq_v and not is_sliding
+            use_alternative_attention = text_config.attention_k_eq_v and not is_sliding
+            kwargs['attention_k_eq_v'] = use_alternative_attention
+            kwargs['num_query_groups'] = (
+                text_config.num_global_key_value_heads
+                if use_alternative_attention else text_config.num_key_value_heads)
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
@@ -415,6 +419,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
 
 
 class Gemma4TextGPTModel(GPTModel):
+    extra_forward_keys = ['mm_token_type_ids']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -490,6 +495,7 @@ class Gemma4TextGPTModel(GPTModel):
         extra_block_kwargs = kwargs.pop('extra_block_kwargs', None) or {}
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
         decoder_input = kwargs.get('decoder_input')
+        mm_token_type_ids = extra_block_kwargs.pop('mm_token_type_ids', None)
         shared_kv_states = {}
         if self.hidden_size_per_layer_input:
             assert self.num_kv_shared_layers > 0, 'not support'
@@ -513,6 +519,8 @@ class Gemma4TextGPTModel(GPTModel):
             assert self.num_kv_shared_layers == 0, 'not support'
         extra_block_kwargs['shared_kv_states'] = shared_kv_states
         kwargs['extra_block_kwargs'] = extra_block_kwargs
+        if self.text_config.use_bidirectional_attention == 'vision':
+            pass
         hidden_states = super().forward(*args, **kwargs)
         if self.hidden_size_per_layer_input and not self.post_process:
             hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
@@ -521,14 +529,14 @@ class Gemma4TextGPTModel(GPTModel):
     def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
         per_layer_inputs = per_layer_inputs.view(*hidden_states.shape[:2], -1)
         hidden_states = torch.concat([hidden_states, per_layer_inputs], dim=-1)
-        flag = per_layer_inputs.new_zeros(*hidden_states.shape[:2], 1)
+        flag = per_layer_inputs.new_zeros(*hidden_states.shape[:2], 2)
         if 'sliding_attention' in shared_kv_states:
-            flag[0] = 1
+            flag[0, 0, 0] = 1
             sliding_states = torch.concat(shared_kv_states['sliding_attention'], -1)
             sliding_states = sliding_states.view(*hidden_states.shape[:2], -1)
             hidden_states = torch.concat([hidden_states, sliding_states], dim=-1)
         if 'full_attention' in shared_kv_states:
-            flag[1] = 1
+            flag[0, 0, 1] = 1
             full_states = torch.concat(shared_kv_states['full_attention'], -1)
             full_states = full_states.view(*hidden_states.shape[:2], -1)
             hidden_states = torch.concat([hidden_states, full_states], dim=-1)
@@ -541,7 +549,7 @@ class Gemma4TextGPTModel(GPTModel):
         input_tensor = self.get_input_tensor()
         self.num_query_groups_per_partition
         sequence_len = input_tensor.shape[0] * tp_size if self.config.sequence_parallel else input_tensor.shape[0]
-        input_tensor, flag = input_tensor.split([input_tensor.shape[-1] - 1, 1], dim=-1)
+        input_tensor, flag = input_tensor.split([input_tensor.shape[-1] - 2, 2], dim=-1)
         flag = flag.detach()
         per_layer_inputs_shape = [
             sequence_len, input_tensor.shape[1], self.config.num_layers, self.hidden_size_per_layer_input // tp_size
@@ -552,12 +560,12 @@ class Gemma4TextGPTModel(GPTModel):
         per_layer_inputs_dim = math.prod(per_layer_inputs_shape) // math.prod(input_tensor.shape[:2])
         full_states_dim = math.prod(full_states_shape) // math.prod(input_tensor.shape[:2])
         sliding_states_dim = math.prod(sliding_states_shape) // math.prod(input_tensor.shape[:2])
-        if flag[1] != 0:
+        if flag[0, 0, 0].item() != 0:
             input_tensor, full_states = input_tensor.split([input_tensor.shape[-1] - full_states_dim, full_states_dim],
                                                            dim=-1)
             full_states = full_states.reshape(*full_states_shape)
             shared_kv_states['full_attention'] = full_states.chunk(2, -1)
-        if flag[0] != 0:
+        if flag[0, 0, 1].item() != 0:
             input_tensor, sliding_states = input_tensor.split(
                 [input_tensor.shape[-1] - sliding_states_dim, sliding_states_dim], dim=-1)
             sliding_states = sliding_states.reshape(*sliding_states_shape)

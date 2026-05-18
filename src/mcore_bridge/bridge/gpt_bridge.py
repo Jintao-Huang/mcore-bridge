@@ -540,11 +540,16 @@ class GPTBridge:
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
         config = self.config
-        num_query_groups = (
-            config.num_query_groups if config.num_query_groups is not None else config.num_attention_heads)
+        num_query_groups = kwargs.get('num_query_groups')
+        if num_query_groups is None:
+            num_query_groups = (
+                config.num_query_groups if config.num_query_groups is not None else config.num_attention_heads)
         hidden_size_block = config.hidden_size // self.fp8_block_size
         attention_k_eq_v = kwargs.get('attention_k_eq_v', False)
         kv_proj_list = ['k_proj'] if attention_k_eq_v else ['k_proj', 'v_proj']
+        kv_channels = kwargs.get('kv_channels')
+        if kv_channels is None:
+            kv_channels = self.config.kv_channels
         if to_mcore:
             if isinstance(mg_attn.linear_qkv, LoraParallelLinear):
                 lora_A = hf_state_dict['q_proj.lora_A.weight'].load()
@@ -577,10 +582,7 @@ class GPTBridge:
                 self._set_weight(
                     mg_attn.linear_qkv.weight, linear_qkv_weight, 'linear_qkv.weight', hf_scale_inv=qkv_scale_inv)
         else:
-            kv_channels = kwargs.get('kv_channels')
-            if kv_channels is None:
-                kv_channels = self.config.kv_channels
-            q_dim = kv_channels * self.config.num_attention_heads // self.config.num_query_groups
+            q_dim = kv_channels * self.config.num_attention_heads // num_query_groups
             if self.config.attention_output_gate:
                 q_dim *= 2
             kv_dim = kv_channels
@@ -604,7 +606,7 @@ class GPTBridge:
                         hf_state_dict[f'{key}.lora_A.weight'] = lora_A.clone()
                     lora_B = lora_B.reshape((num_query_groups, -1, lora_B.shape[-1]))
                     hf_state_dict['q_proj.lora_B.weight'] = lora_B[:, :q_dim, :].reshape(-1, lora_B.shape[-1]).clone()
-                    hf_state_dict['k_proj.lora_B.weight'] = lora_B[:, q_dim:q_dim + kv_dim:, :].reshape(
+                    hf_state_dict['k_proj.lora_B.weight'] = lora_B[:, q_dim:q_dim + kv_dim, :].reshape(
                         -1, lora_B.shape[-1]).clone()
                     if not attention_k_eq_v:
                         hf_state_dict['v_proj.lora_B.weight'] = lora_B[:,
@@ -629,9 +631,8 @@ class GPTBridge:
                     hf_state_dict['k_proj.weight_scale_inv'] = scale_inv[:, q_block:q_block + kv_block:, :].reshape(
                         -1, hidden_size_block).clone()
                     if not attention_k_eq_v:
-                        hf_state_dict['v_proj.weight_scale_inv'] = scale_inv[:,
-                                                                    -kv_block:, :].reshape(-1,
-                                                                                           hidden_size_block).clone()
+                        hf_state_dict['v_proj.weight_scale_inv'] = scale_inv[:, -kv_block:, :].reshape(
+                            -1, hidden_size_block).clone()
                 del mg_attn_weight
 
         # Copy bias
@@ -648,7 +649,7 @@ class GPTBridge:
                 if mg_attn_bias is not None:
                     mg_attn_bias = mg_attn_bias.reshape((num_query_groups, -1))
                     hf_state_dict['q_proj.bias'] = mg_attn_bias[:, :q_dim].reshape(-1).clone()
-                    hf_state_dict['k_proj.bias'] = mg_attn_bias[:, q_dim:q_dim + kv_dim:].reshape(-1).clone()
+                    hf_state_dict['k_proj.bias'] = mg_attn_bias[:, q_dim:q_dim + kv_dim].reshape(-1).clone()
                     if not attention_k_eq_v:
                         hf_state_dict['v_proj.bias'] = mg_attn_bias[:, -kv_dim:].reshape(-1).clone()
         return hf_state_dict

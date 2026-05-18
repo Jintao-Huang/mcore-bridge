@@ -55,6 +55,7 @@ class OutputLayerLinear(TELinear):
 
 class GPTModel(McoreGPTModel):
     config: ModelConfig
+    extra_forward_keys = []
 
     def __init__(
         self,

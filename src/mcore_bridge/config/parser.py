@@ -157,9 +157,11 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res['rotary_interleaved'] = True
     elif hf_model_type in {'gemma4'}:
         res['qk_layernorm'] = True
-        res['window_size'] = f'{window_size},0'
-        window_attn_skip_freq = ','.join(['1' if lt == 'sliding_attention' else '0' for lt in layer_types])
-        res['window_attn_skip_freq'] = f'[{window_attn_skip_freq}]'
+        # If set to "vision", pass attention_mask manually.
+        if hf_config.text_config.use_bidirectional_attention is None:
+            res['window_size'] = f'{window_size - 1},0'
+            window_attn_skip_freq = ','.join(['1' if lt == 'sliding_attention' else '0' for lt in layer_types])
+            res['window_attn_skip_freq'] = f'[{window_attn_skip_freq}]'
         res['softmax_scale'] = 1.
         res['swiglu'] = False
         res['gated_linear_unit'] = True
@@ -172,7 +174,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res['quick_geglu'] = True
         res['activation_func_clamp_value'] = 7
         res['glu_linear_offset'] = 1
-        res['window_size'] = f'{window_size},0'
+        res['window_size'] = f'{window_size - 1},0'
         if layer_types is None:
             res['window_attn_skip_freq'] = '2'
         else:
