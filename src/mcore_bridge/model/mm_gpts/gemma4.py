@@ -486,14 +486,7 @@ class Gemma4TextGPTModel(GPTModel):
         decoder_input = kwargs.get('decoder_input')
         if self.hidden_size_per_layer_input:
             if decoder_input is None:
-                # PP
-                input_tensor = self.get_input_tensor()
-                per_layer_inputs_dim = self.hidden_size_per_layer_input * self.config.num_layers
-                input_tensor, per_layer_inputs = input_tensor.split(
-                    [input_tensor.shape[-1] - per_layer_inputs_dim, per_layer_inputs_dim], dim=-1)
-                self.set_input_tensor(input_tensor)
-                per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], self.config.num_layers,
-                                                         self.hidden_size_per_layer_input)
+                per_layer_inputs, shared_kv_states = self.unpack_pp_input()
             else:
                 inputs_embeds = decoder_input
                 per_layer_inputs = self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale
@@ -507,14 +500,53 @@ class Gemma4TextGPTModel(GPTModel):
                 per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
                 per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
                 per_layer_inputs = scatter_to_tensor_model_parallel_region(per_layer_inputs)
+                shared_kv_states = {}
         extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
-        extra_block_kwargs['shared_kv_states'] = {}
+        extra_block_kwargs['shared_kv_states'] = shared_kv_states
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         hidden_states = super().forward(*args, **kwargs)
         if not self.post_process:
-            per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], -1)
-            hidden_states = torch.concat([hidden_states, per_layer_inputs], dim=-1)
+            hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
         return hidden_states
+
+    def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
+        per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], -1)
+        hidden_states = torch.concat([hidden_states, per_layer_inputs], dim=-1)
+        flag = per_layer_inputs.new_zeros(*per_layer_inputs.shape[:2], 1)
+        if 'sliding_attention' in shared_kv_states:
+            flag[0] = 1
+            sliding_states = torch.concat(shared_kv_states['sliding_attention'], -1)
+            sliding_states = sliding_states.view(*sliding_states.shape[:2], -1)
+            hidden_states = torch.concat([hidden_states, sliding_states], dim=-1)
+        if 'full_attention' in shared_kv_states:
+            flag[1] = 1
+            full_states = torch.concat(shared_kv_states['full_attention'], -1)
+            full_states = full_states.view(*full_states.shape[:2], -1)
+            hidden_states = torch.concat([hidden_states, full_states], dim=-1)
+        hidden_states = torch.concat([hidden_states, flag], dim=-1)
+        return hidden_states
+
+    def unpack_pp_input(self):
+        shared_kv_states = {}
+        input_tensor = self.get_input_tensor()
+        input_tensor, flag = input_tensor.split([input_tensor.shape[-1] - 1, 1], dim=-1)
+        per_layer_inputs_dim = self.hidden_size_per_layer_input * self.config.num_layers
+        if flag[1] == 1:
+            full_head_dim = self.text_config.global_head_dim
+            input_tensor, full_states = input_tensor.split(
+                [input_tensor.shape[-1] - full_head_dim * 2, full_head_dim * 2], dim=-1)
+            shared_kv_states['full_attention'] = full_states[:, :, None].split([full_head_dim, full_head_dim], -1)
+        if flag[0] == 1:
+            input_tensor, sliding_states = input_tensor.split(
+                [input_tensor.shape[-1] - self.config.kv_channels * 2, self.config.kv_channels * 2], dim=-1)
+            shared_kv_states['sliding_attention'] = sliding_states[:, :, None].split(
+                [self.config.kv_channels, self.config.kv_channels], -1)
+        input_tensor, per_layer_inputs = input_tensor.split(
+            [input_tensor.shape[-1] - per_layer_inputs_dim, per_layer_inputs_dim], dim=-1)
+        self.set_input_tensor(input_tensor)
+        per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], self.config.num_layers,
+                                                 self.hidden_size_per_layer_input)
+        return per_layer_inputs, shared_kv_states
 
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         logits, _ = self.output_layer(hidden_states, *args, **kwargs)
