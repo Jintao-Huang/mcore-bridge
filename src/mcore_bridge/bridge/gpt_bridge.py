@@ -607,8 +607,9 @@ class GPTBridge:
                     hf_state_dict['k_proj.lora_B.weight'] = lora_B[:, q_dim:q_dim + kv_dim:, :].reshape(
                         -1, lora_B.shape[-1]).clone()
                     if not attention_k_eq_v:
-                        hf_state_dict['v_proj.lora_B.weight'] = lora_B[:, q_dim + kv_dim:, :].reshape(
-                            -1, lora_B.shape[-1]).clone()
+                        hf_state_dict['v_proj.lora_B.weight'] = lora_B[:,
+                                                                       -kv_dim:, :].reshape(-1,
+                                                                                            lora_B.shape[-1]).clone()
             elif not self._peft_format:
                 mg_attn_weight, scale_inv = self._get_weight(
                     None if mg_attn is None else mg_attn.linear_qkv.weight.data, 'linear_qkv.weight')
@@ -619,7 +620,7 @@ class GPTBridge:
                     hf_state_dict['k_proj.weight'] = mg_attn_weight[:, q_dim:q_dim + kv_dim, :].reshape(
                         -1, config.hidden_size).clone()
                     if not attention_k_eq_v:
-                        hf_state_dict['v_proj.weight'] = mg_attn_weight[:, q_dim + kv_dim:, :].reshape(
+                        hf_state_dict['v_proj.weight'] = mg_attn_weight[:, -kv_dim:, :].reshape(
                             -1, config.hidden_size).clone()
                 if scale_inv is not None:
                     scale_inv = scale_inv.reshape((num_query_groups, -1, hidden_size_block))
@@ -628,8 +629,9 @@ class GPTBridge:
                     hf_state_dict['k_proj.weight_scale_inv'] = scale_inv[:, q_block:q_block + kv_block:, :].reshape(
                         -1, hidden_size_block).clone()
                     if not attention_k_eq_v:
-                        dict['v_proj.weight_scale_inv'] = scale_inv[:, q_block + kv_block:, :].reshape(
-                            -1, hidden_size_block).clone()
+                        dict['v_proj.weight_scale_inv'] = scale_inv[:,
+                                                                    -kv_block:, :].reshape(-1,
+                                                                                           hidden_size_block).clone()
                 del mg_attn_weight
 
         # Copy bias
@@ -648,7 +650,7 @@ class GPTBridge:
                     hf_state_dict['q_proj.bias'] = mg_attn_bias[:, :q_dim].reshape(-1).clone()
                     hf_state_dict['k_proj.bias'] = mg_attn_bias[:, q_dim:q_dim + kv_dim:].reshape(-1).clone()
                     if not attention_k_eq_v:
-                        hf_state_dict['v_proj.bias'] = mg_attn_bias[:, q_dim + kv_dim:].reshape(-1).clone()
+                        hf_state_dict['v_proj.bias'] = mg_attn_bias[:, -kv_dim:].reshape(-1).clone()
         return hf_state_dict
 
     def _set_attn_state(self, mg_attn, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
