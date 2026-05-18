@@ -12,6 +12,8 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel import VocabParallelEmbedding, all_gather_last_dim_from_tensor_parallel_region
+from megatron.core.tensor_parallel.mappings import (gather_from_tensor_model_parallel_region,
+                                                    scatter_to_tensor_model_parallel_region)
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
@@ -368,10 +370,11 @@ class Gemma4Bridge(MultimodalGPTBridge):
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool):
         is_kv_shared_layer = False if mg_attn is None else mg_attn.is_kv_shared_layer
-        is_kv_shared_layer = torch.tensor([is_kv_shared_layer], dtype=torch.bool, device='cuda')
-        if self.pp_size > 1:
-            dist.all_reduce(is_kv_shared_layer, group=self.pp_group, op=dist.ReduceOp.MAX)
-        is_kv_shared_layer = is_kv_shared_layer.item()
+        if not to_mcore:
+            is_kv_shared_layer = torch.tensor([is_kv_shared_layer], dtype=torch.bool, device='cuda')
+            if self.pp_size > 1:
+                dist.all_reduce(is_kv_shared_layer, group=self.pp_group, op=dist.ReduceOp.MAX)
+            is_kv_shared_layer = is_kv_shared_layer.item()
         if is_kv_shared_layer:
             self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'q_proj.weight', to_mcore)
             return hf_state_dict
@@ -480,21 +483,38 @@ class Gemma4TextGPTModel(GPTModel):
     def forward(self, *args, **kwargs):
         extra_block_kwargs = kwargs.pop('extra_block_kwargs', None) or {}
         llm_input_ids = extra_block_kwargs.pop('llm_input_ids', None)
-        if self.hidden_size_per_layer_input and self.pre_process:
-            inputs_embeds = kwargs['decoder_input']
-            per_layer_inputs = self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale
-            per_layer_inputs = per_layer_inputs.reshape(*per_layer_inputs.shape[:-1], self.config.num_layers,
-                                                        -1).transpose(0, 1)
-            per_layer_projection = self.per_layer_model_projection(
-                inputs_embeds)[0] * self.per_layer_model_projection_scale
-            per_layer_projection = per_layer_projection.reshape(*per_layer_projection.shape[:-1],
-                                                                self.config.num_layers, -1)
-            per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
-            per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
+        decoder_input = kwargs.get('decoder_input')
+        if self.hidden_size_per_layer_input:
+            if decoder_input is None:
+                # PP
+                input_tensor = self.get_input_tensor()
+                per_layer_inputs_dim = self.hidden_size_per_layer_input * self.config.num_layers
+                input_tensor, per_layer_inputs = input_tensor.split(
+                    [input_tensor.shape[-1] - per_layer_inputs_dim, per_layer_inputs_dim], dim=-1)
+                self.set_input_tensor(input_tensor)
+                per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], self.config.num_layers,
+                                                         self.hidden_size_per_layer_input)
+            else:
+                inputs_embeds = decoder_input
+                per_layer_inputs = self.embed_tokens_per_layer(llm_input_ids) * self.embed_tokens_per_layer_scale
+                per_layer_inputs = per_layer_inputs.reshape(*per_layer_inputs.shape[:-1], self.config.num_layers,
+                                                            -1).transpose(0, 1)
+                per_layer_projection = self.per_layer_model_projection(
+                    inputs_embeds)[0] * self.per_layer_model_projection_scale
+                per_layer_projection = gather_from_tensor_model_parallel_region(per_layer_projection)
+                per_layer_projection = per_layer_projection.reshape(*per_layer_projection.shape[:-1],
+                                                                    self.config.num_layers, -1)
+                per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
+                per_layer_inputs = (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
+                per_layer_inputs = scatter_to_tensor_model_parallel_region(per_layer_inputs)
         extra_block_kwargs['per_layer_inputs'] = per_layer_inputs
         extra_block_kwargs['shared_kv_states'] = {}
         kwargs['extra_block_kwargs'] = extra_block_kwargs
-        return super().forward(*args, **kwargs)
+        hidden_states = super().forward(*args, **kwargs)
+        if not self.post_process:
+            per_layer_inputs = per_layer_inputs.view(*per_layer_inputs.shape[:2], -1)
+            hidden_states = torch.concat([hidden_states, per_layer_inputs], dim=-1)
+        return hidden_states
 
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         logits, _ = self.output_layer(hidden_states, *args, **kwargs)
