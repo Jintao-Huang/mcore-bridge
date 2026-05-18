@@ -629,7 +629,7 @@ class GPTBridge:
                     hf_state_dict['k_proj.weight_scale_inv'] = scale_inv[:, q_block:q_block + kv_block:, :].reshape(
                         -1, hidden_size_block).clone()
                     if not attention_k_eq_v:
-                        dict['v_proj.weight_scale_inv'] = scale_inv[:,
+                        hf_state_dict['v_proj.weight_scale_inv'] = scale_inv[:,
                                                                     -kv_block:, :].reshape(-1,
                                                                                            hidden_size_block).clone()
                 del mg_attn_weight
