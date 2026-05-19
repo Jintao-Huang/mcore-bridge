@@ -9,6 +9,7 @@ class LLMModelType:
     minimax_m2 = 'minimax_m2'
     hy_v3 = 'hy_v3'
     bailing_moe = 'bailing_moe'
+    bailing_hybrid = 'bailing_hybrid'
 
     qwen3_emb = 'qwen3_emb'
 

@@ -216,6 +216,11 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             res['moe_layer_freq'] = f"[{','.join(moe_layer_freq)}]"
     elif hf_model_type == 'glm4v':
         res['rotary_interleaved'] = True
+    elif llm_model_type == 'bailing_hybrid':
+        res['qk_layernorm'] = True
+        res['add_qkv_bias'] = False
+        res['moe_router_score_function'] = 'sigmoid'
+        res['moe_router_load_balancing_type'] = 'seq_aux_loss'
 
     if 'partial_rotary_factor' not in res and 'partial_rotary_factor' in rope_scaling:
         res['partial_rotary_factor'] = rope_scaling['partial_rotary_factor']
