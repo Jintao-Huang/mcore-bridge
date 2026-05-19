@@ -216,14 +216,14 @@ class TransformerLayer(McoreTransformerLayer):
         additional_mlp_kwargs = {}
         # import here to avoid circular import
         from mcore_bridge.model.gpts.glm4 import Glm4MLP
-        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP
+        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP, Gemma4MoELayer
 
         # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
         # We can change MLP to accept pg_collection but it makes the logic implicit
         # The conditional below is to make the logic explicit
         # if smlp_spec is not a ModuleSpec,we dont have to handle passing additional kwargs
         if isinstance(mlp_spec, ModuleSpec):
-            if mlp_spec.module in (MoELayer, TEGroupedMLP, SequentialMLP):
+            if mlp_spec.module in (MoELayer, Gemma4MoELayer, TEGroupedMLP, SequentialMLP):
                 additional_mlp_kwargs['pg_collection'] = pg_collection
                 # Pass is_mtp_layer flag to MoELayer to distinguish MTP MoE layers.
                 if mlp_spec.module == MoELayer and 'is_mtp_layer' in inspect.signature(MoELayer).parameters:

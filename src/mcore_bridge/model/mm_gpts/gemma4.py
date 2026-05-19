@@ -8,7 +8,6 @@ from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_e
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
-from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel import VocabParallelEmbedding, all_gather_last_dim_from_tensor_parallel_region
@@ -18,10 +17,12 @@ from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubm
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
+from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.utils import make_viewless_tensor, nvtx_range_pop, nvtx_range_push
-from torch import Tensor
+from torch import Tensor, nn
 from transformers import AutoModel, PretrainedConfig
+from transformers.utils.versions import require_version
 from typing import Optional, Tuple
 
 from mcore_bridge.bridge import MultimodalGPTBridge
@@ -36,7 +37,7 @@ from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
 
 
-class Gemma4VNorm(torch.nn.Module):
+class Gemma4RMSNormNoScale(torch.nn.Module):
     """RMSNorm without learnable scale, mirroring HF `Gemma4RMSNorm(with_scale=False)`."""
 
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -186,8 +187,8 @@ class Gemma4SelfAttention(SelfAttention):
                 tp_group=self.pg_collection.tp,
             )
 
-        self.v_norm = (
-            Gemma4VNorm(self.head_dim, eps=self.config.layernorm_epsilon) if not self.is_kv_shared_layer else None)
+        if not self.is_kv_shared_layer:
+            self.v_norm = Gemma4RMSNormNoScale(self.head_dim, eps=self.config.layernorm_epsilon)
 
     def _forward_core_attention(
         self,
@@ -347,12 +348,31 @@ class Gemma4MLP(MLP):
         finally:
             config.ffn_hidden_size = ffn_hidden_size
 
-class Gemma4MoELayer(MoELayer):
-    def __init__(self, config, *args, **kwargs):
-        super().__init__(config, *args, **kwargs)
 
-    def forward(self, hidden_states: torch.Tensor):
-        return super().forward(hidden_states)
+class Gemma4MoELayer(MoELayer):
+
+    def __init__(self, config, *args, **kwargs):
+        require_version('megatron-core>=0.16.0.dev', 'Gemma4MoELayer requires megatron-core>=0.16.0')
+        super().__init__(config, *args, **kwargs)
+        self.pre_feedforward_layernorm_2 = build_module(
+            TENorm, hidden_size=config.hidden_size, config=config, eps=config.layernorm_epsilon)
+        self.norm = Gemma4RMSNormNoScale(config.hidden_size, eps=self.config.layernorm_epsilon)
+        self.scalar_root_size = config.hidden_size**-0.5
+        self.scale = nn.Parameter(torch.ones(config.hidden_size))
+        self.per_expert_scale = nn.Parameter(torch.ones(config.num_moe_experts))
+        self.scale.sequence_parallel = config.sequence_parallel
+        self.per_expert_scale.sequence_parallel = config.sequence_parallel
+
+    def route(self, hidden_states: torch.Tensor, *args, **kwargs):
+        hidden_states = self.norm(hidden_states)
+        hidden_states = hidden_states * self.scale * self.scalar_root_size
+        probs, routing_map = super().route(hidden_states)
+        probs = probs * self.per_expert_scale
+        return probs, routing_map
+
+    def preprocess(self, hidden_states: torch.Tensor, *args, **kwargs):
+        hidden_states = self.pre_feedforward_layernorm_2(hidden_states)
+        return super().preprocess(hidden_states, *args, **kwargs)
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
@@ -398,17 +418,19 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 if use_alternative_attention else text_config.num_key_value_heads)
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+        self._set_state_dict(mg_mlp, 'router.weight', hf_state_dict, 'router.proj.weight', to_mcore)
+        for key in ['per_expert_scale', 'scale']:
+            self._set_state_dict(mg_mlp, key, hf_state_dict, f'router.{key}', to_mcore)
+
     def _set_layer_mlp(self, mg_layer, hf_state_dict, layer_idx: int, to_mcore: bool, is_mtp: bool = False):
         mg_mlp = None if mg_layer is None else mg_layer.mlp
-        hf_state_dict.update(
-                self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
+        hf_state_dict.update(self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
         self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
-                                f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+                             f'{self.hf_post_attention_layernorm}.weight', to_mcore)
         if self.text_config.enable_moe_block:
             mg_experts = None if mg_layer is None else mg_layer.experts_mlp
-            hf_state_dict.update(
-                self._set_moe_state(
-                    mg_experts, hf_state_dict, '', layer_idx, to_mcore, is_mtp=is_mtp))
+            hf_state_dict.update(self._set_moe_state(mg_experts, hf_state_dict, '', layer_idx, to_mcore, is_mtp=is_mtp))
         return hf_state_dict
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
@@ -428,6 +450,8 @@ class Gemma4Bridge(MultimodalGPTBridge):
         if self.text_config.enable_moe_block:
             for key in ['post_feedforward_layernorm_1', 'post_feedforward_layernorm_2']:
                 self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
+            self._set_state_dict(mg_layer, 'experts_mlp.pre_feedforward_layernorm_2.weight', hf_state_dict,
+                                 'pre_feedforward_layernorm_2.weight', to_mcore)
         if to_mcore:
             hf_state_dict = {}
         else:
