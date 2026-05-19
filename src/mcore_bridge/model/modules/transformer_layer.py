@@ -134,8 +134,6 @@ class TransformerLayer(McoreTransformerLayer):
 
         # [Module 8: MLP block]
         self.mlp = self._build_mlp(submodules.mlp)
-        if hasattr(self.mlp, 'set_layer_number'):
-            self.mlp.set_layer_number(self.layer_number)
         # [Module 9: BiasDropoutFusion]
         self.mlp_bda = build_module(submodules.mlp_bda)
         self.is_moe_layer = isinstance(self.mlp, MoELayer)
@@ -238,7 +236,10 @@ class TransformerLayer(McoreTransformerLayer):
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
                 logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
-        return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        mlp = build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        if hasattr(mlp, 'set_layer_number'):
+            mlp.set_layer_number(self.layer_number)
+        return mlp
 
     def forward(self, *args, **kwargs):
         """
