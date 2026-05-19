@@ -103,15 +103,16 @@ class Gemma4Vit(HuggingFaceVit):
 
         if pixel_values_videos is not None:
             with self.patch_hf_config():
-                video_features = self.get_video_features(
-                    pixel_values_videos, video_position_ids, return_dict=True).pooler_output
+                video_features = self.model_cls.get_video_features(
+                    self, pixel_values_videos, video_position_ids, return_dict=True).pooler_output
             video_features = video_features.to(inputs_embeds.device, inputs_embeds.dtype)
             video_mask_e = video_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(video_mask_e, video_features)
 
         if (input_features is not None and input_features_mask is not None and self.audio_tower is not None):
             with self.patch_hf_config():
-                audio_output = self.get_audio_features(input_features, input_features_mask, return_dict=True)
+                audio_output = self.model_cls.get_audio_features(
+                    self, input_features, input_features_mask, return_dict=True)
             audio_features = audio_output.pooler_output
             audio_features = audio_features[audio_output.attention_mask]
             audio_features = audio_features.to(inputs_embeds.device, inputs_embeds.dtype)
@@ -582,7 +583,7 @@ class Gemma4TextGPTModel(GPTModel):
         window_size = self.text_config.sliding_window - 1
         seq_len = attention_mask.shape[-1]
 
-        window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device='cuda')
+        window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=attention_mask.device)
         window_mask = ~torch.triu(window_mask, diagonal=-window_size)
 
         is_vision = mm_token_type_ids > 0
