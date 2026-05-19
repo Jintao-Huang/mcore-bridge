@@ -78,7 +78,6 @@ class Gemma4Vit(HuggingFaceVit):
         inputs_embeds = inputs_embeds * self.embed_scale.to(inputs_embeds.dtype)
 
         hf_config = self.hf_config
-        input_ids = kwargs.get('input_ids')
         pixel_values = kwargs.get('pixel_values')
         pixel_values_videos = kwargs.get('pixel_values_videos')
         input_features = kwargs.get('input_features')
@@ -586,16 +585,18 @@ class Gemma4TextGPTModel(GPTModel):
         window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=attention_mask.device)
         window_mask = ~torch.triu(window_mask, diagonal=-window_size)
 
-        is_vision = mm_token_type_ids > 0
-        is_prev_vision = torch.roll(is_vision, shifts=1, dims=-1)
-        is_prev_vision[:, 0] = False
-        vision_group_ids = torch.cumsum((is_vision & ~is_prev_vision).int(), dim=1) - 1
-        vision_group_ids = torch.where(is_vision, vision_group_ids, torch.full_like(vision_group_ids, -1))
-
-        q_group = vision_group_ids.unsqueeze(1).unsqueeze(-1)
-        k_group = vision_group_ids.unsqueeze(1).unsqueeze(-2)
-        same_vision_group = (q_group == k_group) & (q_group >= 0) & (k_group >= 0)
-        return (attention_mask | window_mask) & ~same_vision_group
+        attention_mask = attention_mask | window_mask
+        if mm_token_type_ids is not None:
+            is_vision = mm_token_type_ids > 0
+            is_prev_vision = torch.roll(is_vision, shifts=1, dims=-1)
+            is_prev_vision[:, 0] = False
+            vision_group_ids = torch.cumsum((is_vision & ~is_prev_vision).int(), dim=1) - 1
+            vision_group_ids = torch.where(is_vision, vision_group_ids, torch.full_like(vision_group_ids, -1))
+            q_group = vision_group_ids.unsqueeze(1).unsqueeze(-1)
+            k_group = vision_group_ids.unsqueeze(1).unsqueeze(-2)
+            same_vision_group = (q_group == k_group) & (q_group >= 0) & (k_group >= 0)
+            attention_mask = attention_mask & ~same_vision_group
+        return attention_mask
 
     def _pack_pp_output(self, hidden_states, per_layer_inputs, shared_kv_states):
         per_layer_inputs = per_layer_inputs.view(*hidden_states.shape[:2], -1)
@@ -630,12 +631,12 @@ class Gemma4TextGPTModel(GPTModel):
         per_layer_inputs_dim = math.prod(per_layer_inputs_shape) // math.prod(input_tensor.shape[:2])
         full_states_dim = math.prod(full_states_shape) // math.prod(input_tensor.shape[:2])
         sliding_states_dim = math.prod(sliding_states_shape) // math.prod(input_tensor.shape[:2])
-        if flag[0, 0, 0].item() != 0:
+        if flag[0, 0, 1].item() != 0:
             input_tensor, full_states = input_tensor.split([input_tensor.shape[-1] - full_states_dim, full_states_dim],
                                                            dim=-1)
             full_states = full_states.reshape(*full_states_shape)
             shared_kv_states['full_attention'] = full_states.chunk(2, -1)
-        if flag[0, 0, 1].item() != 0:
+        if flag[0, 0, 0].item() != 0:
             input_tensor, sliding_states = input_tensor.split(
                 [input_tensor.shape[-1] - sliding_states_dim, sliding_states_dim], dim=-1)
             sliding_states = sliding_states.reshape(*sliding_states_shape)
