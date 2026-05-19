@@ -19,6 +19,51 @@ except ImportError:
     apply_module = None
 
 
+class _TensorIdx:
+    """Sentinel that marks a position in the flatten schema as a tensor index."""
+    __slots__ = ('idx', )
+
+    def __init__(self, idx):
+        self.idx = idx
+
+
+def _checkpoint_flatten(obj, tensors):
+    """Recursively flatten a nested structure (dict/tuple/list/Tensor) into a schema.
+
+    Tensors are appended to `tensors` and replaced in the schema by a _TensorIdx sentinel.
+    Non-tensor leaves (int, bool, None, str, ...) are stored as-is.
+    The schema mirrors the original structure and is captured in the checkpoint closure.
+    """
+    if torch.is_tensor(obj):
+        idx = len(tensors)
+        tensors.append(obj)
+        return _TensorIdx(idx)
+    elif isinstance(obj, dict):
+        # inplace (gemma4 shared_kv_states)
+        for k, v in obj.items():
+            obj[k] = _checkpoint_flatten(v, tensors)
+        return obj
+    elif isinstance(obj, (tuple, list)):
+        return type(obj)(_checkpoint_flatten(v, tensors) for v in obj)
+    else:
+        return obj  # non-tensor leaf: stored directly in schema
+
+
+def _checkpoint_unflatten(schema, tensors):
+    """Reconstruct the original structure from a schema and a flat tensors list."""
+    if isinstance(schema, _TensorIdx):
+        return tensors[schema.idx]
+    elif isinstance(schema, dict):
+        # inplace (gemma4 shared_kv_states)
+        for k, v in schema.items():
+            schema[k] = _checkpoint_unflatten(v, tensors)
+        return schema
+    elif isinstance(schema, (tuple, list)):
+        return type(schema)(_checkpoint_unflatten(v, tensors) for v in schema)
+    else:
+        return schema  # non-tensor leaf
+
+
 # Code borrowed from NVIDIA/Megatron-LM
 class TransformerBlock(McoreTransformerBlock):
 
@@ -99,26 +144,25 @@ class TransformerBlock(McoreTransformerBlock):
 
             return custom_forward
 
-        # `tensor_parallel.checkpoint` / `te_checkpoint` only forward *args to the
-        # wrapped function (torch.utils.checkpoint limitation). Convert kwargs to
-        # positional args by capturing the keys in closure so tensor kwargs (e.g.
-        # qwen3-vl's visual_pos_masks / deepstack_visual_embeds) can flow through
-        # activation recompute and remain in the autograd graph.
+        # Variables that don't require gradients can be captured via closure.
+        _ckpt_attention_mask = attention_mask
+        _ckpt_rotary_pos_emb = rotary_pos_emb
         extra_kwargs_keys = tuple(kwargs.keys())
-        extra_kwargs_values = tuple(kwargs.values())
+        _extra_flat_tensors = []
+        _extra_schemas = [_checkpoint_flatten(v, _extra_flat_tensors) for v in kwargs.values()]
 
         def checkpoint_handler(forward_func):
             """Determines whether to use the `te_checkpoint` or `tensor_parallel.checkpoint`"""
 
-            def wrapped_forward(hidden_states, attention_mask, context, context_mask, rotary_pos_emb, padding_mask,
-                                *extra_args):
-                extra_kwargs = dict(zip(extra_kwargs_keys, extra_args))
+            def wrapped_forward(hidden_states, context, context_mask, padding_mask, *extra_flat):
+                rebuilt = [_checkpoint_unflatten(s, extra_flat) for s in _extra_schemas]
+                extra_kwargs = dict(zip(extra_kwargs_keys, rebuilt))
                 return forward_func(
                     hidden_states,
-                    attention_mask,
+                    _ckpt_attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
+                    _ckpt_rotary_pos_emb,
                     padding_mask,
                     **extra_kwargs,
                 )
@@ -131,24 +175,20 @@ class TransformerBlock(McoreTransformerBlock):
                     tensor_parallel.random.get_cuda_rng_tracker,
                     self.pg_collection.tp,
                     hidden_states,
-                    attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
                     padding_mask,
-                    *extra_kwargs_values,
+                    *_extra_flat_tensors,
                 )
             else:
                 return tensor_parallel.checkpoint(
                     wrapped_forward,
                     self.config.distribute_saved_activations,
                     hidden_states,
-                    attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
                     padding_mask,
-                    *extra_kwargs_values,
+                    *_extra_flat_tensors,
                 )
 
         if self.config.recompute_method == 'uniform':

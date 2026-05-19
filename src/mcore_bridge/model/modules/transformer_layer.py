@@ -134,8 +134,6 @@ class TransformerLayer(McoreTransformerLayer):
 
         # [Module 8: MLP block]
         self.mlp = self._build_mlp(submodules.mlp)
-        if hasattr(self.mlp, 'set_layer_number'):
-            self.mlp.set_layer_number(self.layer_number)
         # [Module 9: BiasDropoutFusion]
         self.mlp_bda = build_module(submodules.mlp_bda)
         self.is_moe_layer = isinstance(self.mlp, MoELayer)
@@ -216,13 +214,14 @@ class TransformerLayer(McoreTransformerLayer):
         additional_mlp_kwargs = {}
         # import here to avoid circular import
         from mcore_bridge.model.gpts.glm4 import Glm4MLP
+        from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP, Gemma4MoELayer
 
         # MLP expects tp_group but MoELayer expects pg_collection to be passed in.
         # We can change MLP to accept pg_collection but it makes the logic implicit
         # The conditional below is to make the logic explicit
         # if smlp_spec is not a ModuleSpec,we dont have to handle passing additional kwargs
         if isinstance(mlp_spec, ModuleSpec):
-            if mlp_spec.module in (MoELayer, TEGroupedMLP, SequentialMLP):
+            if mlp_spec.module in (MoELayer, Gemma4MoELayer, TEGroupedMLP, SequentialMLP):
                 additional_mlp_kwargs['pg_collection'] = pg_collection
                 # Pass is_mtp_layer flag to MoELayer to distinguish MTP MoE layers.
                 if mlp_spec.module == MoELayer and 'is_mtp_layer' in inspect.signature(MoELayer).parameters:
@@ -230,12 +229,17 @@ class TransformerLayer(McoreTransformerLayer):
             elif mlp_spec.module in (MLP, Glm4MLP):
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
+            elif mlp_spec.module == Gemma4MLP:
+                additional_mlp_kwargs['layer_number'] = self.layer_number
             elif TEFusedMLP is not None and mlp_spec.module == TEFusedMLP:
                 assert hasattr(pg_collection, 'tp'), 'TP process group is required for TEFusedMLP in TransformerLayer'
                 additional_mlp_kwargs['tp_group'] = pg_collection.tp
             else:
                 logger.warning_once(f'Unknown MLP type: {mlp_spec.module}. Using default kwargs.')
-        return build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        mlp = build_module(mlp_spec, config=self.config, **additional_mlp_kwargs)
+        if hasattr(mlp, 'set_layer_number'):
+            mlp.set_layer_number(self.layer_number)
+        return mlp
 
     def forward(self, *args, **kwargs):
         """

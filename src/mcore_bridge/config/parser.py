@@ -1,4 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import torch.nn.functional as F
+from functools import partial
 from transformers import PretrainedConfig
 from typing import Any, Dict
 
@@ -25,7 +27,7 @@ config_mapping = {
     # moe
     'moe_ffn_hidden_size': ['moe_intermediate_size'],
     'moe_shared_expert_intermediate_size': ['shared_expert_intermediate_size'],
-    'moe_router_topk': ['num_experts_per_tok', 'moe_topk', 'moe_k'],
+    'moe_router_topk': ['num_experts_per_tok', 'moe_topk', 'moe_k', 'top_k_experts'],
     'moe_router_num_groups': ['n_group'],
     'moe_router_group_topk': ['topk_group'],
     'num_moe_experts': ['num_experts', 'n_routed_experts', 'moe_num_experts', 'num_local_experts'],
@@ -153,6 +155,17 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         n_shared_experts = res.pop('n_shared_experts')
     elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4'}:
         res['rotary_interleaved'] = True
+    elif hf_model_type in {'gemma4'}:
+        res['qk_layernorm'] = True
+        # If set to "vision", pass attention_mask manually.
+        if hf_config.text_config.use_bidirectional_attention is None:
+            res['window_size'] = f'{window_size - 1},0'
+            window_attn_skip_freq = ','.join(['1' if lt == 'sliding_attention' else '0' for lt in layer_types])
+            res['window_attn_skip_freq'] = f'[{window_attn_skip_freq}]'
+        res['softmax_scale'] = 1.
+        res['swiglu'] = False
+        res['gated_linear_unit'] = True
+        res['activation_func'] = partial(F.gelu, approximate='tanh')
     elif llm_model_type == 'gpt_oss':
         res['add_bias_linear'] = True
         res['bias_dropout_fusion'] = False
@@ -161,7 +174,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res['quick_geglu'] = True
         res['activation_func_clamp_value'] = 7
         res['glu_linear_offset'] = 1
-        res['window_size'] = f'{window_size},0'
+        res['window_size'] = f'{window_size - 1},0'
         if layer_types is None:
             res['window_attn_skip_freq'] = '2'
         else:
