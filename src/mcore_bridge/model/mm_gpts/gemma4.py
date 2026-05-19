@@ -2,19 +2,20 @@
 import copy
 import math
 import torch
-import torch.distributed as dist
 from megatron.core.extensions.transformer_engine import (SplitAlongDim, TEColumnParallelLinear, TENorm,
                                                          TERowParallelLinear)
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel import VocabParallelEmbedding, all_gather_last_dim_from_tensor_parallel_region
 from megatron.core.tensor_parallel.mappings import (gather_from_tensor_model_parallel_region,
                                                     scatter_to_tensor_model_parallel_region)
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
+from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.spec_utils import build_module
@@ -157,6 +158,8 @@ class Gemma4SelfAttention(SelfAttention):
         orig_k_layernorm = submodules.k_layernorm
         config.kv_channels = self.head_dim
         config.num_query_groups = self.num_key_value_heads
+        if self.is_sliding and config.window_size is None:
+            kwargs['attn_mask_type'] = AttnMaskType.arbitrary
         if self.is_kv_shared_layer:
             submodules.k_layernorm = IdentityOp
         try:
@@ -334,7 +337,6 @@ class Gemma4MLP(MLP):
     ):
         self.layer_number = layer_number
         text_config = config.hf_config.text_config
-        self.enable_moe_block = text_config.enable_moe_block
         first_kv_shared_layer_idx = config.num_layers - text_config.num_kv_shared_layers
         is_kv_shared_layer = layer_number > first_kv_shared_layer_idx > 0
         use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
@@ -344,6 +346,13 @@ class Gemma4MLP(MLP):
             super().__init__(config, submodules, *args, **kwargs)
         finally:
             config.ffn_hidden_size = ffn_hidden_size
+
+class Gemma4MoELayer(MoELayer):
+    def __init__(self, config, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
+
+    def forward(self, hidden_states: torch.Tensor):
+        return super().forward(hidden_states)
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
@@ -389,6 +398,19 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 if use_alternative_attention else text_config.num_key_value_heads)
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
+    def _set_layer_mlp(self, mg_layer, hf_state_dict, layer_idx: int, to_mcore: bool, is_mtp: bool = False):
+        mg_mlp = None if mg_layer is None else mg_layer.mlp
+        hf_state_dict.update(
+                self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
+        self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
+                                f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+        if self.text_config.enable_moe_block:
+            mg_experts = None if mg_layer is None else mg_layer.experts_mlp
+            hf_state_dict.update(
+                self._set_moe_state(
+                    mg_experts, hf_state_dict, '', layer_idx, to_mcore, is_mtp=is_mtp))
+        return hf_state_dict
+
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         hf_prefix = f'{hf_prefix}{layer_idx}.'
         if to_mcore:
@@ -403,6 +425,9 @@ class Gemma4Bridge(MultimodalGPTBridge):
             for key in ['per_layer_input_gate', 'per_layer_projection', 'post_per_layer_input_norm']:
                 self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
         self._set_state_dict(mg_layer, 'layer_scalar', hf_state_dict, 'layer_scalar', to_mcore)
+        if self.text_config.enable_moe_block:
+            for key in ['post_feedforward_layernorm_1', 'post_feedforward_layernorm_2']:
+                self._set_state_dict(mg_layer, f'{key}.weight', hf_state_dict, f'{key}.weight', to_mcore)
         if to_mcore:
             hf_state_dict = {}
         else:
@@ -568,7 +593,6 @@ class Gemma4TextGPTModel(GPTModel):
         tp_size = self.config.tensor_model_parallel_size
         shared_kv_states = {}
         input_tensor = self.get_input_tensor()
-        self.num_query_groups_per_partition
         sequence_len = input_tensor.shape[0] * tp_size if self.config.sequence_parallel else input_tensor.shape[0]
         input_tensor, flag = input_tensor.split([input_tensor.shape[-1] - 2, 2], dim=-1)
         flag = flag.detach()
@@ -611,6 +635,9 @@ class Gemma4TransformerLayer(TransformerLayer):
     def __init__(self, config, submodules, *args, **kwargs):
         super().__init__(config, submodules, *args, **kwargs)
         text_config = config.hf_config.text_config
+        self.enable_moe_block = text_config.enable_moe_block
+        if self.enable_moe_block:
+            self.experts_mlp = self._build_mlp(submodules.experts_mlp)
         hidden_size = self.config.hidden_size
         eps = self.config.layernorm_epsilon
 
@@ -651,13 +678,10 @@ class Gemma4TransformerLayer(TransformerLayer):
             )
             self.post_per_layer_input_norm = build_module(TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
-        self.enable_moe_block = text_config.enable_moe_block
         if self.enable_moe_block:
             self.post_feedforward_layernorm_1 = build_module(
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
             self.post_feedforward_layernorm_2 = build_module(
-                TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
-            self.pre_feedforward_layernorm_2 = build_module(
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
     def _forward_attention(self, hidden_states: Tensor, **kwargs):
@@ -682,7 +706,13 @@ class Gemma4TransformerLayer(TransformerLayer):
         pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)
         mlp_output, bias = self.mlp(pre_mlp_layernorm_output, padding_mask=padding_mask)
         if self.enable_moe_block:
-            pass
+            mlp_output_1 = self.post_feedforward_layernorm_1(mlp_output)
+            mlp_output_2, bias = self.experts_mlp(residual, padding_mask=padding_mask)
+            mlp_output_2 = self.post_feedforward_layernorm_2(mlp_output_2)
+
+            # Combine mlp and moe outputs
+            mlp_output = mlp_output_1 + mlp_output_2
+
         mlp_output = self.post_feedforward_layernorm(mlp_output)
         hidden_states = self.mlp_bda(self.training, self.config.bias_dropout_fusion)((mlp_output, bias), residual,
                                                                                      self.hidden_dropout)
@@ -727,11 +757,20 @@ class Gemma4Loader(ModelLoader):
     transformer_block = Gemma4TransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
+        num_moe_experts = self.config.num_moe_experts
+        self.config.num_moe_experts = None
         layer_specs = get_gpt_decoder_block_spec(
             self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
         for layer_spec in layer_specs.layer_specs:
             layer_spec.submodules.self_attention.module = Gemma4SelfAttention
             layer_spec.submodules.mlp.module = Gemma4MLP
+        if num_moe_experts is not None:
+            self.config.num_moe_experts = num_moe_experts
+            moe_layer_specs = get_gpt_decoder_block_spec(
+                self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
+            for layer_spec, moe_layer_spec in zip(layer_specs.layer_specs, moe_layer_specs.layer_specs):
+                layer_spec.submodules.experts_mlp = moe_layer_spec.submodules.mlp
+                layer_spec.submodules.experts_mlp.module = Gemma4MoELayer
         return layer_specs
 
     def _set_transformer_layer(self, transformer_layer_spec):
