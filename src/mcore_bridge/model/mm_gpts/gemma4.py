@@ -75,7 +75,7 @@ class Gemma4Vit(HuggingFaceVit):
 
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
         input_ids = kwargs.get('input_ids')
-        inputs_embeds *= self.embed_scale.to(inputs_embeds.dtype)
+        inputs_embeds = inputs_embeds * self.embed_scale.to(inputs_embeds.dtype)
 
         hf_config = self.hf_config
         input_ids = kwargs.get('input_ids')

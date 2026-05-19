@@ -490,8 +490,7 @@ class GPTBridge:
             else:
                 mg_param = deep_getattr(sub_module, param_key)
             if to_mcore:
-                if mg_param is None:
-                    raise ValueError(f'mg_module: {mg_module}, mg_key: {mg_key}')
+                assert mg_param is not None, f'mg_module: {mg_module}, mg_key: {mg_key}'
                 hf_weight = hf_state_dict[hf_key].load()
                 if module_key in {
                         'embedding.word_embeddings', 'output_layer'
@@ -683,6 +682,10 @@ class GPTBridge:
         if self.llm_model_type == 'gpt_oss':
             hf_gate_key = 'router.weight'
         self._set_state_dict(mg_mlp, 'router.weight', hf_state_dict, hf_gate_key, to_mcore)
+        if self.config.add_bias_linear:
+            self._set_state_dict(mg_mlp, 'router.bias', hf_state_dict, hf_gate_key.replace('weight', 'bias'), to_mcore)
+        if self.config.moe_router_enable_expert_bias:
+            self._set_state_dict(mg_mlp, 'router.expert_bias', hf_state_dict, self.hf_expert_bias_key, to_mcore)
 
     def _set_moe_state(
         self,
@@ -697,14 +700,8 @@ class GPTBridge:
             hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
         else:
             hf_state_dict = {}
-        config = self.config
         self._set_router(mg_mlp, hf_state_dict, to_mcore)
-        if config.add_bias_linear:
-            self._set_state_dict(mg_mlp, 'router.bias', hf_state_dict, hf_gate_key.replace('weight', 'bias'), to_mcore)
-        if config.moe_router_enable_expert_bias:
-            self._set_state_dict(mg_mlp, 'router.expert_bias', hf_state_dict, self.hf_expert_bias_key, to_mcore)
-
-        if config.moe_shared_expert_intermediate_size:
+        if self.config.moe_shared_expert_intermediate_size:
             hf_shared_expert_key = self.hf_shared_expert_key
             if hf_shared_expert_key is None:
                 if 'qwen' in self.llm_model_type or self.model_type == 'llama4':
@@ -714,7 +711,7 @@ class GPTBridge:
             hf_state_dict.update(
                 self._set_mlp_state(None if mg_mlp is None else mg_mlp.shared_experts, hf_state_dict,
                                     f'{hf_shared_expert_key}.', layer_idx, to_mcore))
-            if config.moe_shared_expert_gate:
+            if self.config.moe_shared_expert_gate:
                 self._set_state_dict(mg_mlp, 'shared_experts.gate_weight', hf_state_dict, 'shared_expert_gate.weight',
                                      to_mcore)
         for ep_rank in range(self.ep_size):
