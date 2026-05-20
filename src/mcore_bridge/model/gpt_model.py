@@ -149,7 +149,7 @@ class GPTModel(McoreGPTModel):
             t: torch.Tensor,
             freqs: torch.Tensor,
             rotary_interleaved: bool = False,
-            multi_latent_attention: bool = False,  # not use
+            multi_latent_attention: Optional[bool] = None,
             mscale: float = 1.0,
             **kwargs,
         ) -> torch.Tensor:
@@ -169,6 +169,8 @@ class GPTModel(McoreGPTModel):
 
             # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
             t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+            if multi_latent_attention is None:
+                multi_latent_attention = self.config.multi_latent_attention 
             if multi_latent_attention:
                 x1 = t[..., 0::2]
                 x2 = t[..., 1::2]
