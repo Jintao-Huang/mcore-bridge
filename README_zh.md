@@ -123,7 +123,7 @@ uv pip install -e . --torch-backend=auto
 | 系列     | model_type                                                   |
 | -------- | ------------------------------------------------------------ |
 | Qwen     | qwen2, qwen2_moe<br />qwen3, qwen3_moe, qwen3_next |
-| DeepSeek | deepseek_v3, deepseek_v32                                    |
+| DeepSeek | deepseek_v3, deepseek_v32, deepseek_v4                     |
 | GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |
 | Kimi     | kimi_k2, kimi_k25                                   |
