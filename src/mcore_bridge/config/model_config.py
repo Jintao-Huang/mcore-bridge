@@ -314,6 +314,8 @@ class ModelConfig(TransformerConfig):
             self.mtp_num_layers = 1
         else:
             self.mtp_unroll_steps = self.mtp_num_layers
+        if self.multi_latent_attention:
+            self.rotary_interleaved = False
         super().__post_init__()
 
         self._check_npu()
