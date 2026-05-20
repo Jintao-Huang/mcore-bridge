@@ -139,7 +139,6 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         if llm_model_type != 'deepseek':
             res['qk_layernorm'] = True
         res['moe_router_load_balancing_type'] = 'seq_aux_loss'
-        res.pop('num_query_groups', None)  # https://github.com/NVIDIA/Megatron-LM/issues/1475
         if llm_model_type == 'dots1':
             res['moe_router_score_function'] = 'sigmoid'
         elif llm_model_type == 'deepseek_v32':

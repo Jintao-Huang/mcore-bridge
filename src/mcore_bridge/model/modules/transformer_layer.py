@@ -191,13 +191,19 @@ class TransformerLayer(McoreTransformerLayer):
             if 'mlp' in self.config.recompute_modules:
                 if not self.is_moe_layer:
                     self.recompute_mlp = True
-        if hasattr(self.config, 'fine_grained_activation_offloading'):
-            self.offload_attn_norm = (
-                self.config.fine_grained_activation_offloading and 'attn_norm' in self.config.offload_modules
-                and not isinstance(self.input_layernorm, IdentityOp))
-            self.offload_mlp_norm = (
-                self.config.fine_grained_activation_offloading and 'mlp_norm' in self.config.offload_modules
-                and not isinstance(self.pre_mlp_layernorm, IdentityOp))
+        if hasattr(self, '_set_offload_modules'):
+            from megatron.core.transformer.transformer_layer import _get_offloading_interface
+            self._set_offload_modules()
+            self.off_interface = _get_offloading_interface()
+            self.mlp_norm_manager = None
+        else:
+            if hasattr(self.config, 'fine_grained_activation_offloading'):
+                self.offload_attn_norm = (
+                    self.config.fine_grained_activation_offloading and 'attn_norm' in self.config.offload_modules
+                    and not isinstance(self.input_layernorm, IdentityOp))
+                self.offload_mlp_norm = (
+                    self.config.fine_grained_activation_offloading and 'mlp_norm' in self.config.offload_modules
+                    and not isinstance(self.pre_mlp_layernorm, IdentityOp))
 
         # @jcasper how should we handle nvfuser?
         # Set bias+dropout+add fusion grad_enable execution handler.
