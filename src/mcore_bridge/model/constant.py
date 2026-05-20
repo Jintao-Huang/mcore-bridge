@@ -9,6 +9,7 @@ class LLMModelType:
     minimax_m2 = 'minimax_m2'
     hy_v3 = 'hy_v3'
     bailing_moe = 'bailing_moe'
+    deepseek_v4 = 'deepseek_v4'
 
     qwen3_emb = 'qwen3_emb'
 

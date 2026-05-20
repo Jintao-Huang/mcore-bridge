@@ -56,6 +56,15 @@ config_mapping = {
     'dsa_indexer_head_dim': ['index_head_dim'],
     'dsa_indexer_topk': ['index_topk'],
     'dsa_indexer_rotary_interleaved': ['indexer_rope_interleave'],
+    # deepseek_v4
+    'csa_compress_ratios': ['compress_ratios'],
+    'csa_compress_rotary_base': ['compress_rope_theta'],
+    'o_groups': ['o_groups'],
+    'o_lora_rank': ['o_lora_rank'],
+    'num_residual_streams': ['hc_mult'],
+    'mhc_sinkhorn_iterations': ['hc_sinkhorn_iters'],
+    'moe_n_hash_layers': ['num_hash_layers'],
+    'activation_func_clamp_value': ['swiglu_limit'],
     # other
     'original_max_position_embeddings': ['original_max_position_embeddings'],
     'partial_rotary_factor': ['partial_rotary_factor'],
@@ -88,7 +97,7 @@ def _convert_config(config, _internal_call=False) -> Dict[str, Any]:
                     else:
                         continue
                 else:
-                    if k == 'kv_lora_rank':
+                    if k in {'q_lora_rank', 'kv_lora_rank'}:
                         megatron_config['multi_latent_attention'] = True
                     elif k == 'hf_model_type':
                         if _internal_call:
@@ -134,16 +143,18 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res.pop('ffn_hidden_size', None)
         if llm_model_type in {'qwen2_moe', 'qwen3_next'} or hf_model_type == 'qwen3_5_moe':
             res['moe_shared_expert_gate'] = True
-    if llm_model_type in {'deepseek', 'deepseek_v2', 'deepseek_v3', 'kimi_k2', 'deepseek_v32', 'dots1'
+    if llm_model_type in {'deepseek', 'deepseek_v2', 'deepseek_v3', 'kimi_k2', 'deepseek_v32', 'dots1', 'deepseek_v4'
                           } or hf_model_type == 'kimi_vl':
         if llm_model_type != 'deepseek':
             res['qk_layernorm'] = True
         res['moe_router_load_balancing_type'] = 'seq_aux_loss'
-        res.pop('num_query_groups', None)  # https://github.com/NVIDIA/Megatron-LM/issues/1475
         if llm_model_type == 'dots1':
             res['moe_router_score_function'] = 'sigmoid'
         elif llm_model_type == 'deepseek_v32':
             res['experimental_attention_variant'] = 'dsa'
+        elif llm_model_type == 'deepseek_v4':
+            res['experimental_attention_variant'] = 'dsv4_hybrid'
+            res['csa_window_size'] = window_size
     elif llm_model_type == 'hunyuan':
         # Since HunYuan’s attention applies RoPE before using q/k_layernorm,
         # which is incompatible with megatron-core, support is not provided here.

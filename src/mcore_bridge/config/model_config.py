@@ -196,13 +196,25 @@ class ModelConfig(TransformerConfig):
     linear_decoupled_in_proj: bool = False
 
     # dsa
-    experimental_attention_variant: Optional[Literal['gated_delta_net', 'dsa']] = None
+    experimental_attention_variant: Optional[Literal['gated_delta_net', 'dsa', 'dsv4_hybrid']] = None
     dsa_indexer_n_heads: Optional[int] = None
     dsa_indexer_head_dim: Optional[int] = None
     dsa_indexer_topk: Optional[int] = None
     dsa_indexer_loss_coeff: Optional[float] = None
     dsa_indexer_use_sparse_loss: bool = False
     dsa_indexer_rotary_interleaved: bool = False
+
+    # deepseek-v4
+    csa_window_size: int = 128
+    csa_compress_ratios: Optional[List[int]] = None
+    csa_compress_rotary_base: float = 40000.0
+    o_groups: int = 8
+    o_lora_rank: int = 1024
+    enable_hyper_connections: bool = False
+    num_residual_streams: int = 4
+    mhc_sinkhorn_iterations: int = 20
+    mhc_init_gating_factor: float = 0.01
+    moe_n_hash_layers: int = 0
 
     # mtp
     mtp_decoder_input_detach: bool = False
