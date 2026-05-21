@@ -3,6 +3,8 @@ import enum
 import inspect
 import torch
 from functools import partial
+from contextlib import contextmanager
+from megatron.core.models.common.embeddings import rope_utils
 from megatron.core.extensions.transformer_engine import TEFusedMLP
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
@@ -213,6 +215,61 @@ class TransformerLayer(McoreTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
+
+    @contextmanager
+    def _patch_apply_rotary_pos_emb(self):
+        if self.config.apply_rope_fusion:
+            yield
+            return
+
+        _origin_apply_rotary_pos_emb_bshd = rope_utils._apply_rotary_pos_emb_bshd
+
+        def _apply_rotary_pos_emb_bshd(
+            t: torch.Tensor,
+            freqs: torch.Tensor,
+            rotary_interleaved: bool = False,
+            multi_latent_attention: Optional[bool] = None,
+            mscale: float = 1.0,
+            **kwargs,
+        ) -> torch.Tensor:
+            """Apply rotary positional embedding to input tensor T.
+
+            check https://kexue.fm/archives/8265 for detailed formulas
+
+            Args:
+                t (Tensor): Input tensor T is of shape [seq_length, ... , dim]
+                freqs (Tensor): Rotary Positional embedding tensor freq is of shape [seq_length, ..., dim]
+
+            Returns:
+                Tensor: The input tensor after applying RoPE
+            """
+            mscale = self.config.attention_scaling
+            rot_dim = freqs.shape[-1]
+
+            # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
+            t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+            if multi_latent_attention is None:
+                multi_latent_attention = self.config.multi_latent_attention
+            if multi_latent_attention:
+                x1 = t[..., 0::2]
+                x2 = t[..., 1::2]
+                t = torch.cat((x1, x2), dim=-1)
+
+            # first part is cosine component
+            # second part is sine component, need to change signs with _rotate_half method
+            cos_ = (torch.cos(freqs) * mscale).to(t.dtype)
+            sin_ = (torch.sin(freqs) * mscale).to(t.dtype)
+
+            t = (t * cos_) + (rope_utils._rotate_half(t, rotary_interleaved) * sin_)
+            return torch.cat((t, t_pass), dim=-1)
+
+        rope_utils._apply_rotary_pos_emb_bshd = _apply_rotary_pos_emb_bshd
+        try:
+            yield
+        finally:
+            rope_utils._origin_apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
+
+
     def _build_mlp(self, mlp_spec):
         pg_collection = self.pg_collection
         additional_mlp_kwargs = {}
@@ -266,7 +323,8 @@ class TransformerLayer(McoreTransformerLayer):
         if padding_mask is not None:
             kwargs['padding_mask'] = padding_mask
             mlp_kwargs['padding_mask'] = padding_mask
-        hidden_states, context = self._forward_attention(*args, **kwargs)
+        with self._patch_apply_rotary_pos_emb():
+            hidden_states, context = self._forward_attention(*args, **kwargs)
         # If padding_free is set, attention_mask does not exist.
         mlp_padding_free = self.config.mlp_padding_free and 'attention_mask' in kwargs
         mask = None

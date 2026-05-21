@@ -11,13 +11,11 @@ from megatron.core.config_logger import has_config_logger_enabled, log_config_to
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.inference.contexts import BaseInferenceContext
-from megatron.core.models.common.embeddings import rope_utils
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.gpt import GPTModel as McoreGPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
-                                                    gather_from_tensor_model_parallel_region,
-                                                    scatter_to_sequence_parallel_region)
+                                                    gather_from_tensor_model_parallel_region)
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
@@ -125,8 +123,6 @@ class GPTModel(McoreGPTModel):
             config.apply_rope_fusion = False
             logger.warning(f'`apply_rope_fusion` does not support `attention_scaling`. '
                            f'Setting `config.apply_rope_fusion`: {config.apply_rope_fusion}')
-        if not config.apply_rope_fusion:
-            self._patch_apply_rotary_pos_emb()
         if getattr(self, 'mtp', None) is not None:
             for layer in self.mtp.layers:
                 # compat megatron-core main branch
@@ -139,53 +135,6 @@ class GPTModel(McoreGPTModel):
                 attention = layer.transformer_layer.self_attention
                 attention.config = copy.copy(attention.config)
                 attention.config.apply_rope_fusion = False
-
-    def _patch_apply_rotary_pos_emb(self):
-        if hasattr(rope_utils, '_origin_apply_rotary_pos_emb_bshd'):
-            return
-        _origin_apply_rotary_pos_emb_bshd = rope_utils._apply_rotary_pos_emb_bshd
-
-        def _apply_rotary_pos_emb_bshd(
-            t: torch.Tensor,
-            freqs: torch.Tensor,
-            rotary_interleaved: bool = False,
-            multi_latent_attention: Optional[bool] = None,
-            mscale: float = 1.0,
-            **kwargs,
-        ) -> torch.Tensor:
-            """Apply rotary positional embedding to input tensor T.
-
-            check https://kexue.fm/archives/8265 for detailed formulas
-
-            Args:
-                t (Tensor): Input tensor T is of shape [seq_length, ... , dim]
-                freqs (Tensor): Rotary Positional embedding tensor freq is of shape [seq_length, ..., dim]
-
-            Returns:
-                Tensor: The input tensor after applying RoPE
-            """
-            mscale = self.attention_scaling
-            rot_dim = freqs.shape[-1]
-
-            # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
-            t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
-            if multi_latent_attention is None:
-                multi_latent_attention = self.config.multi_latent_attention
-            if multi_latent_attention:
-                x1 = t[..., 0::2]
-                x2 = t[..., 1::2]
-                t = torch.cat((x1, x2), dim=-1)
-
-            # first part is cosine component
-            # second part is sine component, need to change signs with _rotate_half method
-            cos_ = (torch.cos(freqs) * mscale).to(t.dtype)
-            sin_ = (torch.sin(freqs) * mscale).to(t.dtype)
-
-            t = (t * cos_) + (rope_utils._rotate_half(t, rotary_interleaved) * sin_)
-            return torch.cat((t, t_pass), dim=-1)
-
-        rope_utils._apply_rotary_pos_emb_bshd = _apply_rotary_pos_emb_bshd
-        rope_utils._origin_apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
 
     def _preprocess(
         self,
@@ -241,6 +190,7 @@ class GPTModel(McoreGPTModel):
         return (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
 
     def _set_inv_freq(self):
+        self.config.attention_scaling = 1.
         self.attention_scaling = 1.
         new_inv_freq, self.attention_scaling = get_rope_inv_freq(self.config)
         self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
