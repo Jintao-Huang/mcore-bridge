@@ -489,15 +489,16 @@ class Gemma4TextGPTModel(GPTModel):
     def __init__(self, config, *args, **kwargs):
         # If set to "vision", pass attention_mask manually.
         text_config = config.hf_config.text_config
-        if text_config.use_bidirectional_attention == 'vision' and config.attention_backend.name != 'unfused':
-            logger.warning(
-                f'attention_backend {config.attention_backend.name} does not support use_bidirectional_attention '
-                'for vision. Setting `use_bidirectional_attention` to None. Note: This may cause computational '
-                'errors in multimodal scenarios. Please always pass pure text data.')
-            text_config.use_bidirectional_attention = None
-        else:
-            config.window_size = None
-            config.window_attn_skip_freq = None
+        if text_config.use_bidirectional_attention == 'vision':
+            if config.attention_backend.name != 'unfused':
+                logger.warning(
+                    f'attention_backend {config.attention_backend.name} does not support use_bidirectional_attention '
+                    'for vision. Setting `use_bidirectional_attention` to None. Note: This may cause computational '
+                    'errors in multimodal scenarios. Please always pass pure text data.')
+                text_config.use_bidirectional_attention = None
+            else:
+                config.window_size = None
+                config.window_attn_skip_freq = None
         super().__init__(config, *args, **kwargs)
         self.num_query_groups_per_partition = self.decoder.layers[0].self_attention.num_query_groups_per_partition
         self.text_config = text_config
