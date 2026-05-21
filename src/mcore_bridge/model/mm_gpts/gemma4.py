@@ -280,6 +280,7 @@ class Gemma4SelfAttention(SelfAttention):
             size = mixed_qkv.size()[-1] // self.config.num_query_groups
             mixed_qkv = mixed_qkv[:, :, idx * size:(idx + 1) * size]
 
+        thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
         if self.is_kv_shared_layer:
             query = mixed_qkv
             key, value = shared_kv_states[self.layer_type]
@@ -304,6 +305,9 @@ class Gemma4SelfAttention(SelfAttention):
                 query, key, value = qkv
             key = self.k_layernorm(key)
             value = self.v_norm(value)
+            if thd_format:
+                key = key.squeeze(1)
+                value = value.squeeze(1)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
         if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
@@ -313,10 +317,8 @@ class Gemma4SelfAttention(SelfAttention):
         query = self.q_layernorm(query)
         if isinstance(rotary_pos_emb, torch.Tensor):
             rotary_pos_emb = (rotary_pos_emb, ) * 2
-        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+        if thd_format:
             query = query.squeeze(1)
-            key = key.squeeze(1)
-            value = value.squeeze(1)
         query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
         if self.store_full_length_kv:
             shared_kv_states[self.layer_type] = key, value
