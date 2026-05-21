@@ -339,7 +339,7 @@ class GPTModel(McoreGPTModel):
         full_attention_mask = attention_mask
         if isinstance(full_attention_mask, dict):
             full_attention_mask = full_attention_mask['full_attention']
-        if mcore_016 and attention_mask is not None:
+        if mcore_016 and full_attention_mask is not None:
             assert packed_seq_params is None
             padding_mask = ~((~full_attention_mask).sum(dim=(1, 2)) > 0)
             if self.config.context_parallel_size > 1:

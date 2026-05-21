@@ -215,9 +215,15 @@ class TransformerLayer(McoreTransformerLayer):
 
     def _build_mlp(self, mlp_spec):
         pg_collection = self.pg_collection
-        if isinstance(mlp_spec, partial):
-            return mlp_spec(config=self.config, pg_collection=pg_collection, is_mtp_layer=self.is_mtp_layer)
         additional_mlp_kwargs = {}
+        if isinstance(mlp_spec, partial):
+            if 'layer_number' in inspect.signature(mlp_spec.func).parameters:
+                additional_mlp_kwargs['layer_number'] = self.layer_number
+            return mlp_spec(
+                config=self.config,
+                pg_collection=pg_collection,
+                is_mtp_layer=self.is_mtp_layer,
+                **additional_mlp_kwargs)
         # import here to avoid circular import
         from mcore_bridge.model.gpts.glm4 import Glm4MLP
         from mcore_bridge.model.mm_gpts.gemma4 import Gemma4MLP, Gemma4MoELayer
