@@ -242,7 +242,7 @@ class TransformerLayer(McoreTransformerLayer):
             Returns:
                 Tensor: The input tensor after applying RoPE
             """
-            mscale = self.config.attention_scaling
+            mscale = getattr(self.config, 'attention_scaling', 1.0)
             rot_dim = freqs.shape[-1]
 
             # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
@@ -266,7 +266,7 @@ class TransformerLayer(McoreTransformerLayer):
         try:
             yield
         finally:
-            rope_utils._origin_apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
+            rope_utils._apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
 
     def _build_mlp(self, mlp_spec):
         pg_collection = self.pg_collection
