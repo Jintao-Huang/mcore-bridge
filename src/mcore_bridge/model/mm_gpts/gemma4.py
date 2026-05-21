@@ -547,7 +547,7 @@ class Gemma4TextGPTModel(GPTModel):
             self.config, text_config=self.config.hf_config.text_config, **kwargs)
         assert attention_scaling == 1, 'not support'
         self.full_rotary_pos_emb.inv_freq = new_inv_freq
-        self.attention_scaling = attention_scaling
+        self.config.attention_scaling = attention_scaling
 
         self.config.rope_scaling = rope_scaling
 

@@ -119,6 +119,7 @@ class ModelConfig(TransformerConfig):
     llm_model_type: Optional[str] = None
     padded_vocab_size: Optional[int] = None
     rope_scaling: Optional[Union[dict, str]] = None
+    attention_scaling: float = 1.
 
     # model
     num_layers: Optional[int] = None

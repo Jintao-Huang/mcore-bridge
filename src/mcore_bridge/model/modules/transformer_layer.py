@@ -2,10 +2,10 @@
 import enum
 import inspect
 import torch
-from functools import partial
 from contextlib import contextmanager
-from megatron.core.models.common.embeddings import rope_utils
+from functools import partial
 from megatron.core.extensions.transformer_engine import TEFusedMLP
+from megatron.core.models.common.embeddings import rope_utils
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
                                                     scatter_to_sequence_parallel_region)
@@ -215,7 +215,6 @@ class TransformerLayer(McoreTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
-
     @contextmanager
     def _patch_apply_rotary_pos_emb(self):
         if self.config.apply_rope_fusion:
@@ -268,7 +267,6 @@ class TransformerLayer(McoreTransformerLayer):
             yield
         finally:
             rope_utils._origin_apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
-
 
     def _build_mlp(self, mlp_spec):
         pg_collection = self.pg_collection

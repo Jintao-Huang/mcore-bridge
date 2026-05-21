@@ -119,7 +119,7 @@ class GPTModel(McoreGPTModel):
         elif self.config.task_type == 'embedding' and self.post_process:
             self.output_layer = None
 
-        if self.attention_scaling != 1 and config.apply_rope_fusion:
+        if config.attention_scaling != 1 and config.apply_rope_fusion:
             config.apply_rope_fusion = False
             logger.warning(f'`apply_rope_fusion` does not support `attention_scaling`. '
                            f'Setting `config.apply_rope_fusion`: {config.apply_rope_fusion}')
@@ -190,9 +190,7 @@ class GPTModel(McoreGPTModel):
         return (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
 
     def _set_inv_freq(self):
-        self.config.attention_scaling = 1.
-        self.attention_scaling = 1.
-        new_inv_freq, self.attention_scaling = get_rope_inv_freq(self.config)
+        new_inv_freq, self.config.attention_scaling = get_rope_inv_freq(self.config)
         self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
 
     def _get_rotary_pos_emb(self, decoder_input, position_ids, packed_seq_params, inference_context=None):
@@ -214,9 +212,9 @@ class GPTModel(McoreGPTModel):
                                                                     decoder_input, self.config, packed_seq_params)
                 if self.hf_rope_scaling is not None:
                     attention_scaling = dynamic_rope_update(self, self.rotary_pos_emb.inv_freq, rotary_seq_len)
-                    if attention_scaling is not None and attention_scaling != self.attention_scaling:
+                    if attention_scaling is not None and attention_scaling != self.config.attention_scaling:
                         raise ValueError('Currently does not support changing attention_scaling during training. '
-                                         f'self.attention_scaling: {self.attention_scaling}, '
+                                         f'config.attention_scaling: {self.config.attention_scaling}, '
                                          f'current_attention_scaling: {attention_scaling}.')
                 if self.position_embedding_type == 'mrope':
                     rotary_pos_emb = self.rotary_pos_emb(
