@@ -80,7 +80,9 @@ class ModelLoader:
     def _set_mlp_spec(self, layer_submodules, mlp_module, mlp_key='mlp'):
         mlp_spec = getattr(layer_submodules, mlp_key)
         if isinstance(mlp_spec, partial):
-            mlp_spec = partial(mlp_module.as_mlp_submodule, *mlp_spec.args, **mlp_spec.keywords)
+            mlp_spec = partial(
+                mlp_module.as_mlp_submodule if hasattr(mlp_module, 'as_mlp_submodule') else mlp_module, *mlp_spec.args,
+                **mlp_spec.keywords)
             setattr(layer_submodules, mlp_key, mlp_spec)
         else:
             mlp_spec.module = mlp_module
