@@ -381,7 +381,7 @@ config = ModelConfig(
     mtp_num_layers=1,
     **config_kwargs)
 
-mg_model = get_mcore_model(config)
+mg_model = get_mcore_model(config)[0]
 mg_model.cuda()
 config.bridge.load_weights([mg_model], model_dir)
 loss = forward_mg_model(mg_model, template)
