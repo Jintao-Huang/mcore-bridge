@@ -20,6 +20,7 @@ from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.utils import make_viewless_tensor, nvtx_range_pop, nvtx_range_push
+from swift.utils import get_logger
 from torch import Tensor, nn
 from transformers import AutoModel, PretrainedConfig
 from transformers.utils.versions import require_version
@@ -35,6 +36,8 @@ from ..modules import TransformerBlock, TransformerLayer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
+
+logger = get_logger()
 
 
 class Gemma4RMSNormNoScale(torch.nn.Module):
@@ -483,10 +486,20 @@ class Gemma4Bridge(MultimodalGPTBridge):
 class Gemma4TextGPTModel(GPTModel):
     extra_forward_keys = ['mm_token_type_ids']
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, *args, **kwargs):
+        # If set to "vision", pass attention_mask manually.
+        text_config = config.hf_config.text_config
+        if text_config.use_bidirectional_attention == 'vision' and config.attention_backend.name != 'unfused':
+            logger.warning(
+                f'attention_backend {config.attention_backend.name} does not support use_bidirectional_attention '
+                'for vision. Setting `use_bidirectional_attention` to None. Note: This may cause computational '
+                'errors in multimodal scenarios. Please always pass pure text data.')
+            text_config.use_bidirectional_attention = None
+        else:
+            config.window_size = None
+            config.window_attn_skip_freq = None
+        super().__init__(config, *args, **kwargs)
         self.num_query_groups_per_partition = self.decoder.layers[0].self_attention.num_query_groups_per_partition
-        text_config = self.config.hf_config.text_config
         self.text_config = text_config
         self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
         self.unique_layer_types = set(text_config.layer_types)
@@ -583,7 +596,7 @@ class Gemma4TextGPTModel(GPTModel):
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         attention_mask = kwargs.get('attention_mask')
         kwargs['attention_mask'] = {'sliding_attention': attention_mask, 'full_attention': attention_mask}
-        if self.text_config.use_bidirectional_attention == 'vision':
+        if self.text_config.use_bidirectional_attention == 'vision' and attention_mask is not None:
             kwargs['attention_mask']['sliding_attention'] = self._create_sliding_attention_mask(
                 attention_mask, mm_token_type_ids)
         hidden_states = super().forward(*args, **kwargs)
