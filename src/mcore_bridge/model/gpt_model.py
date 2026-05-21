@@ -11,13 +11,11 @@ from megatron.core.config_logger import has_config_logger_enabled, log_config_to
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.inference.contexts import BaseInferenceContext
-from megatron.core.models.common.embeddings import rope_utils
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.gpt import GPTModel as McoreGPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
-                                                    gather_from_tensor_model_parallel_region,
-                                                    scatter_to_sequence_parallel_region)
+                                                    gather_from_tensor_model_parallel_region)
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
@@ -121,12 +119,10 @@ class GPTModel(McoreGPTModel):
         elif self.config.task_type == 'embedding' and self.post_process:
             self.output_layer = None
 
-        if self.attention_scaling != 1 and config.apply_rope_fusion:
+        if config.attention_scaling != 1 and config.apply_rope_fusion:
             config.apply_rope_fusion = False
             logger.warning(f'`apply_rope_fusion` does not support `attention_scaling`. '
                            f'Setting `config.apply_rope_fusion`: {config.apply_rope_fusion}')
-        if not config.apply_rope_fusion:
-            self._patch_apply_rotary_pos_emb()
         if getattr(self, 'mtp', None) is not None:
             for layer in self.mtp.layers:
                 # compat megatron-core main branch
@@ -139,51 +135,6 @@ class GPTModel(McoreGPTModel):
                 attention = layer.transformer_layer.self_attention
                 attention.config = copy.copy(attention.config)
                 attention.config.apply_rope_fusion = False
-
-    def _patch_apply_rotary_pos_emb(self):
-        if hasattr(rope_utils, '_origin_apply_rotary_pos_emb_bshd'):
-            return
-        _origin_apply_rotary_pos_emb_bshd = rope_utils._apply_rotary_pos_emb_bshd
-
-        def _apply_rotary_pos_emb_bshd(
-            t: torch.Tensor,
-            freqs: torch.Tensor,
-            rotary_interleaved: bool = False,
-            multi_latent_attention: bool = False,  # not use
-            mscale: float = 1.0,
-            **kwargs,
-        ) -> torch.Tensor:
-            """Apply rotary positional embedding to input tensor T.
-
-            check https://kexue.fm/archives/8265 for detailed formulas
-
-            Args:
-                t (Tensor): Input tensor T is of shape [seq_length, ... , dim]
-                freqs (Tensor): Rotary Positional embedding tensor freq is of shape [seq_length, ..., dim]
-
-            Returns:
-                Tensor: The input tensor after applying RoPE
-            """
-            mscale = self.attention_scaling
-            rot_dim = freqs.shape[-1]
-
-            # ideally t_pass is empty so rotary pos embedding is applied to all tensor t
-            t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
-            if multi_latent_attention:
-                x1 = t[..., 0::2]
-                x2 = t[..., 1::2]
-                t = torch.cat((x1, x2), dim=-1)
-
-            # first part is cosine component
-            # second part is sine component, need to change signs with _rotate_half method
-            cos_ = (torch.cos(freqs) * mscale).to(t.dtype)
-            sin_ = (torch.sin(freqs) * mscale).to(t.dtype)
-
-            t = (t * cos_) + (rope_utils._rotate_half(t, rotary_interleaved) * sin_)
-            return torch.cat((t, t_pass), dim=-1)
-
-        rope_utils._apply_rotary_pos_emb_bshd = _apply_rotary_pos_emb_bshd
-        rope_utils._origin_apply_rotary_pos_emb_bshd = _origin_apply_rotary_pos_emb_bshd
 
     def _preprocess(
         self,
@@ -239,8 +190,7 @@ class GPTModel(McoreGPTModel):
         return (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
 
     def _set_inv_freq(self):
-        self.attention_scaling = 1.
-        new_inv_freq, self.attention_scaling = get_rope_inv_freq(self.config)
+        new_inv_freq, self.config.attention_scaling = get_rope_inv_freq(self.config)
         self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
 
     def _get_rotary_pos_emb(self, decoder_input, position_ids, packed_seq_params, inference_context=None):
@@ -262,9 +212,9 @@ class GPTModel(McoreGPTModel):
                                                                     decoder_input, self.config, packed_seq_params)
                 if self.hf_rope_scaling is not None:
                     attention_scaling = dynamic_rope_update(self, self.rotary_pos_emb.inv_freq, rotary_seq_len)
-                    if attention_scaling is not None and attention_scaling != self.attention_scaling:
+                    if attention_scaling is not None and attention_scaling != self.config.attention_scaling:
                         raise ValueError('Currently does not support changing attention_scaling during training. '
-                                         f'self.attention_scaling: {self.attention_scaling}, '
+                                         f'config.attention_scaling: {self.config.attention_scaling}, '
                                          f'current_attention_scaling: {attention_scaling}.')
                 if self.position_embedding_type == 'mrope':
                     rotary_pos_emb = self.rotary_pos_emb(
@@ -337,7 +287,7 @@ class GPTModel(McoreGPTModel):
         full_attention_mask = attention_mask
         if isinstance(full_attention_mask, dict):
             full_attention_mask = full_attention_mask['full_attention']
-        if mcore_016 and attention_mask is not None:
+        if mcore_016 and full_attention_mask is not None:
             assert packed_seq_params is None
             padding_mask = ~((~full_attention_mask).sum(dim=(1, 2)) > 0)
             if self.config.context_parallel_size > 1:

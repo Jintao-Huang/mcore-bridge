@@ -280,6 +280,7 @@ class Gemma4SelfAttention(SelfAttention):
             size = mixed_qkv.size()[-1] // self.config.num_query_groups
             mixed_qkv = mixed_qkv[:, :, idx * size:(idx + 1) * size]
 
+        thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
         if self.is_kv_shared_layer:
             query = mixed_qkv
             key, value = shared_kv_states[self.layer_type]
@@ -304,6 +305,9 @@ class Gemma4SelfAttention(SelfAttention):
                 query, key, value = qkv
             key = self.k_layernorm(key)
             value = self.v_norm(value)
+            if thd_format:
+                key = key.squeeze(1)
+                value = value.squeeze(1)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
         if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
@@ -313,7 +317,8 @@ class Gemma4SelfAttention(SelfAttention):
         query = self.q_layernorm(query)
         if isinstance(rotary_pos_emb, torch.Tensor):
             rotary_pos_emb = (rotary_pos_emb, ) * 2
-
+        if thd_format:
+            query = query.squeeze(1)
         query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
         if self.store_full_length_kv:
             shared_kv_states[self.layer_type] = key, value
@@ -340,13 +345,21 @@ class Gemma4MLP(MLP):
         text_config = config.hf_config.text_config
         first_kv_shared_layer_idx = config.num_layers - text_config.num_kv_shared_layers
         is_kv_shared_layer = layer_number > first_kv_shared_layer_idx > 0
-        use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
+        self.use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
         ffn_hidden_size = config.ffn_hidden_size
-        config.ffn_hidden_size = config.ffn_hidden_size * (2 if use_double_wide_mlp else 1)
+        config.ffn_hidden_size = config.ffn_hidden_size * (2 if self.use_double_wide_mlp else 1)
         try:
             super().__init__(config, submodules, *args, **kwargs)
         finally:
             config.ffn_hidden_size = ffn_hidden_size
+
+    @classmethod
+    def as_mlp_submodule(cls, *args, layer_number: int, **kwargs) -> MLP:
+        pg_collection = kwargs.pop('pg_collection')
+        kwargs.pop('is_mtp_layer', None)
+        assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
+        kwargs['tp_group'] = pg_collection.tp
+        return cls(*args, layer_number=layer_number, **kwargs)
 
 
 class Gemma4MoELayer(MoELayer):
@@ -536,7 +549,7 @@ class Gemma4TextGPTModel(GPTModel):
             self.config, text_config=self.config.hf_config.text_config, **kwargs)
         assert attention_scaling == 1, 'not support'
         self.full_rotary_pos_emb.inv_freq = new_inv_freq
-        self.attention_scaling = attention_scaling
+        self.config.attention_scaling = attention_scaling
 
         self.config.rope_scaling = rope_scaling
 
@@ -789,14 +802,14 @@ class Gemma4Loader(ModelLoader):
             self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
         for layer_spec in layer_specs.layer_specs:
             layer_spec.submodules.self_attention.module = Gemma4SelfAttention
-            layer_spec.submodules.mlp.module = Gemma4MLP
+            self._set_mlp_spec(layer_spec.submodules, Gemma4MLP)
         if num_moe_experts is not None:
             self.config.num_moe_experts = num_moe_experts
             moe_layer_specs = get_gpt_decoder_block_spec(
                 self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
             for layer_spec, moe_layer_spec in zip(layer_specs.layer_specs, moe_layer_specs.layer_specs):
                 layer_spec.submodules.experts_mlp = moe_layer_spec.submodules.mlp
-                layer_spec.submodules.experts_mlp.module = Gemma4MoELayer
+                self._set_mlp_spec(layer_spec.submodules, Gemma4MoELayer, mlp_key='experts_mlp')
         return layer_specs
 
     def _set_transformer_layer(self, transformer_layer_spec):

@@ -18,7 +18,7 @@
 
 
 <p align="center">
-<img src="https://img.shields.io/badge/python-3.11-5be.svg">
+<img src="https://img.shields.io/badge/python-3.12-5be.svg">
 <img src="https://img.shields.io/badge/pytorch-%E2%89%A52.0-orange.svg">
 <a href="https://github.com/NVIDIA/Megatron-LM/"><img src="https://img.shields.io/badge/megatron--core-%E2%89%A50.15-76B900.svg"></a>
 <!-- <a href="https://mcore-bridge.readthedocs.io/en/latest/"><img src="https://img.shields.io/badge/docs-latest-blue.svg"></a> -->
