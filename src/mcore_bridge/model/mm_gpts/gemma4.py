@@ -596,7 +596,7 @@ class Gemma4TextGPTModel(GPTModel):
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         attention_mask = kwargs.get('attention_mask')
         kwargs['attention_mask'] = {'sliding_attention': attention_mask, 'full_attention': attention_mask}
-        if self.text_config.use_bidirectional_attention == 'vision' and attention_mask is not None:
+        if self.text_config.use_bidirectional_attention == 'vision':
             kwargs['attention_mask']['sliding_attention'] = self._create_sliding_attention_mask(
                 attention_mask, mm_token_type_ids)
         hidden_states = super().forward(*args, **kwargs)
