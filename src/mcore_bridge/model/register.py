@@ -2,6 +2,7 @@
 import megatron.core
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.extensions.transformer_engine import TEGroupedLinear, TELayerNormColumnParallelLinear, TELinear
@@ -75,6 +76,16 @@ class ModelLoader:
         self.config = config
         if self.model_cls is None:
             self.model_cls = MultimodalGPTModel if config.is_multimodal else GPTModel
+
+    def _set_mlp_spec(self, layer_submodules, mlp_module, mlp_key='mlp'):
+        mlp_spec = getattr(layer_submodules, mlp_key)
+        if isinstance(mlp_spec, partial):
+            mlp_spec = partial(
+                mlp_module.as_mlp_submodule if hasattr(mlp_module, 'as_mlp_submodule') else mlp_module, *mlp_spec.args,
+                **mlp_spec.keywords)
+            setattr(layer_submodules, mlp_key, mlp_spec)
+        else:
+            mlp_spec.module = mlp_module
 
     def _replace_spec_dsa(self, layer_spec):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import (
