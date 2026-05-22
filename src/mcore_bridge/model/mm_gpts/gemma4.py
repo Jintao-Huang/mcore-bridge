@@ -551,7 +551,7 @@ class Gemma4TextGPTModel(GPTModel):
         rope_scaling = self.config.rope_scaling
         self.config.rope_scaling = rope_scaling['sliding_attention']
         new_inv_freq, attention_scaling = get_rope_inv_freq(self.config)
-        assert attention_scaling == 1, 'not support'
+        self.config.attention_scaling = attention_scaling
         self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
         # full
         self.full_rotary_pos_emb = copy.copy(self.rotary_pos_emb)
@@ -561,9 +561,8 @@ class Gemma4TextGPTModel(GPTModel):
             kwargs['head_dim_key'] = 'global_head_dim'
         new_inv_freq, attention_scaling = get_rope_inv_freq(
             self.config, text_config=self.config.hf_config.text_config, **kwargs)
-        assert attention_scaling == 1, 'not support'
         self.full_rotary_pos_emb.inv_freq = new_inv_freq
-        self.config.attention_scaling = attention_scaling
+        self.config.full_attention_scaling = attention_scaling
 
         self.config.rope_scaling = rope_scaling
 
