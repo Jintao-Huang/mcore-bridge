@@ -242,7 +242,7 @@ class TransformerLayer(McoreTransformerLayer):
             Returns:
                 Tensor: The input tensor after applying RoPE
             """
-            mscale = getattr(self.config, 'attention_scaling', 1.0)
+            mscale = self.config.attention_scaling
             rot_dim = freqs.shape[-1]
 
             # ideally t_pass is empty so rotary pos embedding is applied to all tensor t

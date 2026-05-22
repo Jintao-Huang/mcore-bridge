@@ -235,7 +235,7 @@ class Gemma4SelfAttention(SelfAttention):
 
     def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
         attention_scaling = self.config.attention_scaling
-        if not self.self_attention.is_sliding:
+        if not self.is_sliding:
             self.config.attention_scaling = self.config.full_attention_scaling
         nvtx_range_push(suffix='rotary_pos_emb')
         q_pos_emb, k_pos_emb = rotary_pos_emb
