@@ -57,7 +57,7 @@ config_mapping = {
     'dsa_indexer_topk': ['index_topk'],
     'dsa_indexer_rotary_interleaved': ['indexer_rope_interleave'],
     # deepseek_v4
-    'csa_compress_ratios': ['compress_ratios'],
+    'csa_compress_ratios': ['compress_rates'],
     'csa_compress_rotary_base': ['compress_rope_theta'],
     'o_groups': ['o_groups'],
     'o_lora_rank': ['o_lora_rank'],
@@ -130,6 +130,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
     first_k_dense_replace = res.pop('first_k_dense_replace', None)
     n_shared_experts = res.pop('n_shared_experts', None)
     layer_types = res.pop('layer_types', None)
+    csa_compress_ratios = res.pop('csa_compress_ratios', None)
     mlp_ffn_hidden_size = res.pop('mlp_ffn_hidden_size', None)
     interleave_moe_layer_step = res.pop('interleave_moe_layer_step', None)
     window_size = res.pop('window_size', None)
@@ -156,6 +157,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             res['experimental_attention_variant'] = 'dsv4_hybrid'
             res['csa_window_size'] = window_size
             res['enable_hyper_connections'] = True
+            res['csa_compress_ratios'] = [csa_compress_ratios.get(layer_type, 0) for layer_type in layer_types]
     elif llm_model_type == 'hunyuan':
         # Since HunYuan’s attention applies RoPE before using q/k_layernorm,
         # which is incompatible with megatron-core, support is not provided here.

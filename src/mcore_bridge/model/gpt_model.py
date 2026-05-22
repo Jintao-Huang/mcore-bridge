@@ -66,19 +66,14 @@ class GPTModel(McoreGPTModel):
     ):
         vocab_size = math.ceil(
             config.padded_vocab_size / config.tensor_model_parallel_size) * config.tensor_model_parallel_size
-        hf_rope_scaling = config.rope_scaling
+        self.hf_rope_scaling = config.rope_scaling
         if config.multi_latent_attention:
             config.rope_type = 'rope'  # use transformers implementation
             # Set default value, the following content will not be used. (dummy)
             config.mscale_all_dim = 0.
             config.cache_mla_latents = False
             config.rotary_scaling_factor = 40
-            if hf_rope_scaling and hf_rope_scaling['rope_type'] == 'yarn':
-                # softmax_scale
-                config.mscale = hf_rope_scaling['mscale']
-                config.mscale_all_dim = hf_rope_scaling['mscale_all_dim']
-                config.rotary_scaling_factor = hf_rope_scaling['factor']
-        self.hf_rope_scaling = hf_rope_scaling
+            self._init_mla_softmax_scale(config)
         super().__init__(
             config,
             transformer_layer_spec,
@@ -135,6 +130,13 @@ class GPTModel(McoreGPTModel):
                 attention = layer.transformer_layer.self_attention
                 attention.config = copy.copy(attention.config)
                 attention.config.apply_rope_fusion = False
+
+    def _init_mla_softmax_scale(self, config):
+        if self.hf_rope_scaling and self.hf_rope_scaling['rope_type'] == 'yarn':
+            # softmax_scale
+            config.mscale = self.hf_rope_scaling['mscale']
+            config.mscale_all_dim = self.hf_rope_scaling['mscale_all_dim']
+            config.rotary_scaling_factor = self.hf_rope_scaling['factor']
 
     def _preprocess(
         self,
