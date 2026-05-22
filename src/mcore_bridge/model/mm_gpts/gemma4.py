@@ -2,6 +2,7 @@
 import copy
 import math
 import torch
+from contextlib import contextmanager
 from megatron.core.extensions.transformer_engine import (SplitAlongDim, TEColumnParallelLinear, TENorm,
                                                          TERowParallelLinear)
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
@@ -233,10 +234,17 @@ class Gemma4SelfAttention(SelfAttention):
         nvtx_range_pop(suffix='core_attention')
         return core_attn_out
 
-    def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
+    @contextmanager
+    def _patch_attention_scaling(self):
         attention_scaling = self.config.attention_scaling
         if not self.is_sliding:
             self.config.attention_scaling = self.config.full_attention_scaling
+        try:
+            yield
+        finally:
+            self.config.attention_scaling = attention_scaling
+
+    def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
         nvtx_range_push(suffix='rotary_pos_emb')
         q_pos_emb, k_pos_emb = rotary_pos_emb
 
@@ -272,7 +280,6 @@ class Gemma4SelfAttention(SelfAttention):
                 cp_group=self.pg_collection.cp,
             )
         nvtx_range_pop(suffix='rotary_pos_emb')
-        self.config.attention_scaling = attention_scaling
         return query, key
 
     def forward(self, hidden_states: Tensor, attention_mask: Tensor, **kwargs) -> Tuple[Tensor, Tensor]:
@@ -326,7 +333,8 @@ class Gemma4SelfAttention(SelfAttention):
             rotary_pos_emb = (rotary_pos_emb, ) * 2
         if thd_format:
             query = query.squeeze(1)
-        query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
+        with self._patch_attention_scaling():
+            query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
         if self.store_full_length_kv:
             shared_kv_states[self.layer_type] = key, value
         core_attn_out = self._forward_core_attention(query, key, value, attention_mask, attention_bias,
