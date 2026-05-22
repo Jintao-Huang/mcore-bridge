@@ -742,7 +742,11 @@ class Gemma4TransformerLayer(TransformerLayer):
         input_layernorm_output = self.input_layernorm(hidden_states)
         # Self attention.
         nvtx_range_push(suffix='self_attention')
+        attention_scaling = self.config.attention_scaling
+        if not self.self_attention.is_sliding:
+            self.config.attention_scaling = self.config.full_attention_scaling
         attention_output, bias = self.self_attention(input_layernorm_output, **kwargs)
+        self.config.attention_scaling = attention_scaling
         nvtx_range_pop(suffix='self_attention')
         attention_output = self.post_attention_layernorm(attention_output)
 
