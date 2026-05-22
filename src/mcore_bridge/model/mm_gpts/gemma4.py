@@ -234,6 +234,9 @@ class Gemma4SelfAttention(SelfAttention):
         return core_attn_out
 
     def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
+        attention_scaling = self.config.attention_scaling
+        if not self.self_attention.is_sliding:
+            self.config.attention_scaling = self.config.full_attention_scaling
         nvtx_range_push(suffix='rotary_pos_emb')
         q_pos_emb, k_pos_emb = rotary_pos_emb
 
@@ -269,6 +272,7 @@ class Gemma4SelfAttention(SelfAttention):
                 cp_group=self.pg_collection.cp,
             )
         nvtx_range_pop(suffix='rotary_pos_emb')
+        self.config.attention_scaling = attention_scaling
         return query, key
 
     def forward(self, hidden_states: Tensor, attention_mask: Tensor, **kwargs) -> Tuple[Tensor, Tensor]:
@@ -742,11 +746,7 @@ class Gemma4TransformerLayer(TransformerLayer):
         input_layernorm_output = self.input_layernorm(hidden_states)
         # Self attention.
         nvtx_range_push(suffix='self_attention')
-        attention_scaling = self.config.attention_scaling
-        if not self.self_attention.is_sliding:
-            self.config.attention_scaling = self.config.full_attention_scaling
         attention_output, bias = self.self_attention(input_layernorm_output, **kwargs)
-        self.config.attention_scaling = attention_scaling
         nvtx_range_pop(suffix='self_attention')
         attention_output = self.post_attention_layernorm(attention_output)
 
