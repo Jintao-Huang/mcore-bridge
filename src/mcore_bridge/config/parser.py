@@ -154,6 +154,8 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         elif llm_model_type == 'deepseek_v32':
             res['experimental_attention_variant'] = 'dsa'
         elif llm_model_type == 'deepseek_v4':
+            if 'v_head_dim' not in res:
+                res['v_head_dim'] = res['kv_channels']
             res['experimental_attention_variant'] = 'dsv4_hybrid'
             res['csa_window_size'] = window_size
             res['enable_hyper_connections'] = True

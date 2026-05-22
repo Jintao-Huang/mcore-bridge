@@ -1617,6 +1617,23 @@ class GPTBridge:
                                  f'{self.hf_post_attention_layernorm}.weight', to_mcore)
         return hf_state_dict
 
+    def _set_hyper_connection(self, mg_layer, hf_state_dict, layer_idx, to_mcore):
+
+        for key, hf_key in zip(['self_attention_hyper_connection', 'mlp_hyper_connection'], ['attn', 'ffn']):
+            hyper_connection = None if mg_layer is None else getattr(mg_layer, key)
+            self._set_state_dict(hyper_connection, 'mapping_proj.weight', hf_state_dict, f'hc_{hf_key}_fn', to_mcore)
+            self._set_state_dict(hyper_connection, 'bias', hf_state_dict, f'hc_{hf_key}_base', to_mcore)
+            if hyper_connection is not None:
+                if to_mcore:
+                    alpha = hf_state_dict['hc_attn_scale'].load()
+                    for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
+                        getattr(hyper_connection, f'alpha_{alpha_suffix}').data[:] = alpha[i]
+                else:
+                    alpha = []
+                    for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
+                        alpha.append(getattr(hyper_connection, f'alpha_{alpha_suffix}'))
+                    hf_state_dict['hc_attn_scale'] = torch.concat(alpha)
+
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         hf_prefix = f'{hf_prefix}{layer_idx}.'
         if to_mcore:
@@ -1625,6 +1642,9 @@ class GPTBridge:
             hf_state_dict = {}
         hf_state_dict.update(self._set_layer_attn(mg_layer, hf_state_dict, layer_idx, to_mcore))
         hf_state_dict.update(self._set_layer_mlp(mg_layer, hf_state_dict, layer_idx, to_mcore))
+        if self.config.enable_hyper_connections:
+            self._set_hyper_connection(mg_layer, hf_state_dict, layer_idx, to_mcore)
+
         if to_mcore:
             hf_state_dict = {}
         else:

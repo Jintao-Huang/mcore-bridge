@@ -10,6 +10,7 @@ from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
+from .minimax_m2 import MinimaxM2Bridge
 
 
 class DeepseekV4GPTModel(GPTModel):
@@ -52,7 +53,49 @@ class DeepseekV4Loader(ModelLoader):
 
 
 class DeepseekV4Bridge(GPTBridge):
-    pass
+    hf_embed_key = 'model.embed.weight'
+    hf_attn_prefix = 'attn'
+    hf_mlp_prefix = 'ffn'
+    hf_lm_head_key = 'model.head.weight'
+    hf_score_key = 'model.score.weight'
+
+    def _convert_hf_state_dict(self, hf_state_dict, to_mcore):
+        res = super()._convert_hf_state_dict(hf_state_dict, to_mcore)
+        if to_mcore:
+            res = self._add_prefix(res, 'model.')
+        elif not to_mcore:
+            res = self._remove_prefix(res, 'model.')
+        return res
+
+    def _set_moe_state(self, *args, **kwargs):
+        return MinimaxM2Bridge._set_moe_state(self, *args, **kwargs)
+
+    def _set_mla_attn_state(
+        self,
+        mg_attn,
+        hf_state_dict,
+        hf_prefix: str,
+        layer_idx: int,
+        to_mcore: bool,
+    ):
+        if to_mcore:
+            hf_state_dict = self._remove_prefix(hf_state_dict, hf_prefix)
+        else:
+            hf_state_dict = {}
+        self._set_state_dict(mg_attn, 'linear_proj.weight', hf_state_dict, 'wo_b.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'linear_o_group_proj', hf_state_dict, 'wo_a.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'linear_q_down_proj.weight', hf_state_dict, 'wq_a.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'linear_q_up_proj.weight', hf_state_dict, 'wq_b.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'linear_kv_proj.weight', hf_state_dict, 'wkv.weight', to_mcore)
+        self._set_state_dict(mg_attn, 'core_attention.attn_sink', hf_state_dict, 'attn_sink', to_mcore)
+        if self.config.qk_layernorm:
+            self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, 'q_norm.weight', to_mcore)
+            self._set_state_dict(mg_attn, 'kv_layernorm.weight', hf_state_dict, 'kv_norm.weight', to_mcore)
+        if to_mcore:
+            hf_state_dict = {}
+        else:
+            hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
+        return hf_state_dict
 
 
 register_model(

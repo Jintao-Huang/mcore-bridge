@@ -130,6 +130,8 @@ class ModelLoader:
                     layer_spec.submodules.mlp.submodules.shared_experts.params = {'gate': True}
 
     def _set_transformer_layer(self, transformer_layer_spec):
+        if self.config.enable_hyper_connections:
+            return
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = TransformerLayer
 
