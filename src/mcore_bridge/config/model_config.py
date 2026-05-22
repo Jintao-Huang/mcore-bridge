@@ -287,8 +287,6 @@ class ModelConfig(TransformerConfig):
             self.rope_scaling = json_parse_to_dict(self.rope_scaling)
             if 'type' in self.rope_scaling and 'rope_type' not in self.rope_scaling:
                 self.rope_scaling['rope_type'] = self.rope_scaling['type']
-        if self.multi_latent_attention and self.partial_rotary_factor is None:
-            self.partial_rotary_factor = self.qk_pos_emb_head_dim / self.kv_channels
 
         if self.add_bias_linear:
             self.add_qkv_bias = True

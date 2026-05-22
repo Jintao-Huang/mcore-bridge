@@ -29,7 +29,7 @@ def _get_dummy_config(config):
         rope_scaling=config.rope_scaling,
         rope_theta=config.rotary_base,
         max_position_embeddings=config.max_position_embeddings,
-        head_dim=config.kv_channels,
+        head_dim=config.qk_pos_emb_head_dim if config.multi_latent_attention else config.kv_channels,
         hidden_size=config.hidden_size,
         num_attention_heads=config.num_attention_heads,
     )
