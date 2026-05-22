@@ -404,7 +404,6 @@ class Gemma4MoELayer(MoELayer):
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
-    hf_post_attention_layernorm = 'pre_feedforward_layernorm'
     additional_dim0_keys = {'embed_tokens_per_layer', 'per_layer_input_gate', 'per_layer_model_projection'}
     additional_dim1_keys = {'per_layer_projection'}
 
@@ -455,7 +454,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
         mg_mlp = None if mg_layer is None else mg_layer.mlp
         hf_state_dict.update(self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
         self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
-                             f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+                             'pre_feedforward_layernorm.weight', to_mcore)
         if self.text_config.enable_moe_block:
             mg_experts = None if mg_layer is None else mg_layer.experts_mlp
             hf_state_dict.update(self._set_moe_state(mg_experts, hf_state_dict, '', layer_idx, to_mcore, is_mtp=is_mtp))

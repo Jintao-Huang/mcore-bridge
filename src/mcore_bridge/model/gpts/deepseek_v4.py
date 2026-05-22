@@ -10,7 +10,6 @@ from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
-from .minimax_m2 import MinimaxM2Bridge
 
 
 class DeepseekV4GPTModel(GPTModel):
@@ -23,8 +22,8 @@ class DeepseekV4GPTModel(GPTModel):
                                                             self.config, packed_seq_params)
         packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
         rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
-        full_rotary_pos_emb = self.full_rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
-        rotary_pos_emb = {'main': rotary_pos_emb, 'compress': full_rotary_pos_emb}
+        compress_rotary_pos_emb = self.compress_rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
+        rotary_pos_emb = {'main': rotary_pos_emb, 'compress': compress_rotary_pos_emb}
         return rotary_pos_emb, None, None
 
     def _set_inv_freq(self):
@@ -58,6 +57,8 @@ class DeepseekV4Bridge(GPTBridge):
     hf_mlp_prefix = 'ffn'
     hf_lm_head_key = 'model.head.weight'
     hf_score_key = 'model.score.weight'
+    hf_input_layernorm_key = 'attn_norm.weight'
+    hf_post_attention_layernorm_key = 'ffn_norm.weight'
 
     def _convert_hf_state_dict(self, hf_state_dict, to_mcore):
         res = super()._convert_hf_state_dict(hf_state_dict, to_mcore)
@@ -67,8 +68,27 @@ class DeepseekV4Bridge(GPTBridge):
             res = self._remove_prefix(res, 'model.')
         return res
 
-    def _set_moe_state(self, *args, **kwargs):
-        return MinimaxM2Bridge._set_moe_state(self, *args, **kwargs)
+    def _set_moe_state(
+        self,
+        mg_mlp,
+        hf_state_dict,
+        hf_prefix: str,
+        layer_idx: int,
+        to_mcore: bool,
+        is_mtp: bool = False,
+    ):
+        if to_mcore:
+            hf_state_dict = {
+                k.replace('.w1.', '.gate_proj.').replace('.w3.', '.up_proj.').replace('.w2.', '.down_proj.'): v
+                for k, v in hf_state_dict.items()
+            }
+        hf_state_dict = super()._set_moe_state(mg_mlp, hf_state_dict, hf_prefix, layer_idx, to_mcore, is_mtp)
+        if not to_mcore:
+            hf_state_dict = {
+                k.replace('.gate_proj.', '.w1.').replace('.up_proj.', '.w3.').replace('.down_proj.', '.w2.'): v
+                for k, v in hf_state_dict.items()
+            }
+        return hf_state_dict
 
     def _set_mla_attn_state(
         self,
@@ -96,6 +116,11 @@ class DeepseekV4Bridge(GPTBridge):
         else:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
         return hf_state_dict
+
+    def _set_final_layernorm(self, lm_model, hf_state_dict, to_mcore):
+        super()._set_final_layernorm(lm_model, hf_state_dict, to_mcore)
+        for key in ['hc_head_base', 'hc_head_fn', 'hc_head_scale']:
+            self._set_state_dict(lm_model, f'decoder.{key}', hf_state_dict, f'model.{key}', to_mcore)
 
 
 register_model(
