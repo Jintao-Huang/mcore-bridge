@@ -2,6 +2,7 @@
 import copy
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
+from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from typing import Optional
 
 from mcore_bridge.bridge import GPTBridge
@@ -10,6 +11,40 @@ from ..constant import ModelType
 from ..gpt_model import GPTModel
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
+
+try:
+    from megatron.core.transformer.experimental_attention_variant.deepseek_v4_hybrid_attention import \
+        DSv4HybridAttention as McoreDSv4HybridAttention
+except ImportError:
+    McoreDSv4HybridAttention = object
+
+
+class DSv4HybridAttention(McoreDSv4HybridAttention):
+
+    def __init__(self, config, *args, **kwargs):
+        assert McoreDSv4HybridAttention is not object, ('Please install the Megatron-Core dev branch: '
+                                                        '`pip install git+https://github.com/NVIDIA/Megatron-LM@dev`')
+        super().__init__(config, *args, **kwargs)
+        print()
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask,
+        key_value_states=None,
+        inference_context=None,
+        rotary_pos_emb=None,
+        rotary_pos_cos=None,
+        rotary_pos_sin=None,
+        rotary_pos_cos_sin=None,
+        attention_bias=None,
+        packed_seq_params=None,
+        position_ids=None,
+        sequence_len_offset=None,
+        *,
+        inference_params=None,
+    ):
+        pass
 
 
 class DeepseekV4GPTModel(GPTModel):
@@ -44,6 +79,7 @@ class DeepseekV4GPTModel(GPTModel):
 
 class DeepseekV4Loader(ModelLoader):
     model_cls = DeepseekV4GPTModel
+    transformer_block = McoreTransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import \
