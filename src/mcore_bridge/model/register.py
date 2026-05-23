@@ -8,6 +8,8 @@ from megatron.core.enums import ModelType
 from megatron.core.extensions.transformer_engine import TEGroupedLinear, TELayerNormColumnParallelLinear, TELinear
 from megatron.core.models.gpt import gpt_model
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec, get_gpt_mtp_block_spec
+from megatron.core.transformer.multi_latent_attention import MLASelfAttention as McoreMLASelfAttention
+from megatron.core.transformer.transformer_layer import TransformerLayer as McoreTransformerLayer
 from packaging import version
 from torch import nn
 from typing import TYPE_CHECKING, List, Optional, Type, Union
@@ -16,7 +18,7 @@ from mcore_bridge.bridge import GPTBridge
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.utils import get_logger
 
-from .modules import MultiTokenPredictionLayer, TransformerBlock, TransformerLayer
+from .modules import MLASelfAttention, MultiTokenPredictionLayer, TransformerBlock, TransformerLayer
 
 if TYPE_CHECKING:
     from .gpt_model import GPTModel
@@ -131,7 +133,14 @@ class ModelLoader:
 
     def _set_transformer_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
-            layer_spec.module = TransformerLayer
+            if layer_spec.module is McoreTransformerLayer:
+                layer_spec.module = TransformerLayer
+
+    def _replace_mla_attention(self, transformer_layer_spec):
+        for layer_spec in transformer_layer_spec.layer_specs:
+            self_attention = layer_spec.submodules.self_attention
+            if self_attention.module is McoreMLASelfAttention:
+                self_attention.module = MLASelfAttention
 
     def build_model(
         self,
@@ -142,6 +151,7 @@ class ModelLoader:
         transformer_layer_spec = self.get_transformer_layer_spec(vp_stage=vp_stage)
         self._set_shared_expert_gate(transformer_layer_spec)
         self._set_transformer_layer(transformer_layer_spec)
+        self._replace_mla_attention(transformer_layer_spec)
         mtp_block_spec = None
         if self.config.mtp_num_layers is not None:
             mtp_block_spec = self.get_mtp_block_spec(transformer_layer_spec, vp_stage=vp_stage)

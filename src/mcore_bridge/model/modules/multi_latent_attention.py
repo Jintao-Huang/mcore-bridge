@@ -56,8 +56,6 @@ class MLASelfAttention(McoreMLASelfAttention):
                 q_compressed = gather_from_tensor_model_parallel_region(q_compressed)
                 if self.config.sequence_parallel:
                     q_compressed = scatter_to_sequence_parallel_region(q_compressed)
-
-            q_compressed = self.q_layernorm(q_compressed)
         else:
             q_compressed = hidden_states
 
@@ -83,7 +81,19 @@ class MLASelfAttention(McoreMLASelfAttention):
                 # k_pos_emb: [s, b, qk_pos_emb_head_dim]
                 k_pos_emb = gather_from_sequence_parallel_region(k_pos_emb)
 
+        if self.config.q_lora_rank is not None:
+            # q_compressed: [num_tokens, q_lora_rank]
+            q_compressed = self.q_layernorm(q_compressed)
+
         kv_compressed = self.kv_layernorm(kv_compressed)
+
+        if packed_seq_params is not None:
+            # If sequence packing, TE expect [t, h, d] shaped qkv input.
+            # In Megatron-Core, the qkv shape is [t, 1, h, d].
+            # So we need to reshape qkv from [t, 1, h, d] to [t, h, d].
+            q_compressed = q_compressed.squeeze(1)
+            kv_compressed = kv_compressed.squeeze(1)
+            k_pos_emb = k_pos_emb.squeeze(1)
 
         # =========================================
         # QKV up projection and RoPE apply
@@ -166,14 +176,6 @@ class MLASelfAttention(McoreMLASelfAttention):
             key = key.contiguous()
             value = value.contiguous()
             return query, key, value
-
-        if packed_seq_params is not None:
-            # If sequence packing, TE expect [t, h, d] shaped qkv input.
-            # In Megatron-Core, the qkv shape is [t, 1, h, d].
-            # So we need to reshape qkv from [t, 1, h, d] to [t, h, d].
-            q_compressed = q_compressed.squeeze(1)
-            kv_compressed = kv_compressed.squeeze(1)
-            k_pos_emb = k_pos_emb.squeeze(1)
 
         if self.recompute_up_proj:
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput()
