@@ -1610,8 +1610,8 @@ class GPTBridge:
             hf_state_dict.update(
                 self._set_moe_state(
                     mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore, is_mtp=is_mtp))
-            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict, self.hf_post_attention_layernorm_key,
-                                 to_mcore)
+            self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict,
+                                 self.hf_post_attention_layernorm_key, to_mcore)
         else:
             hf_state_dict.update(
                 self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
