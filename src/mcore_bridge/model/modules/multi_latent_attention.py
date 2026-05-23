@@ -164,7 +164,7 @@ class MLASelfAttention(McoreMLASelfAttention):
             # query: [num_tokens, n, (qk_head_dim + v_head_dim)]
             query = torch.cat([q_no_pe, q_pos_emb], dim=-1)
 
-            # key: [num_tokens, n, (qk_head_dim + v_head_dim)]Add commentMore actions
+            # key: [num_tokens, n, (qk_head_dim + v_head_dim)]
             if k_pos_emb.ndim == 4:
                 k_pos_emb = k_pos_emb.expand(-1, -1, self.num_attention_heads_per_partition, -1)
             else:
