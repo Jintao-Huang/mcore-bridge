@@ -40,7 +40,8 @@ class GPTBridge:
     hf_o_proj_key = 'o_proj'
     hf_attn_prefix = 'self_attn'
     hf_mlp_prefix = 'mlp'
-    hf_post_attention_layernorm = 'post_attention_layernorm'
+    hf_input_layernorm_key = 'input_layernorm.weight'
+    hf_post_attention_layernorm_key = 'post_attention_layernorm.weight'
     hf_gate_key = 'gate.weight'
     hf_shared_expert_key = None
     hf_expert_bias_key = 'gate.e_score_correction_bias'
@@ -1589,12 +1590,13 @@ class GPTBridge:
         if self.config.multi_latent_attention:
             hf_state_dict.update(
                 self._set_mla_attn_state(mg_attn, hf_state_dict, f'{self.hf_attn_prefix}.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, 'input_layernorm.weight', to_mcore)
+            self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, self.hf_input_layernorm_key,
+                                 to_mcore)
         else:
             hf_state_dict.update(
                 self._set_attn_state(mg_attn, hf_state_dict, f'{self.hf_attn_prefix}.', layer_idx, to_mcore))
             self._set_state_dict(mg_layer, 'self_attention.linear_qkv.layer_norm_weight', hf_state_dict,
-                                 'input_layernorm.weight', to_mcore)
+                                 self.hf_input_layernorm_key, to_mcore)
         return hf_state_dict
 
     def _set_layer_mlp(self, mg_layer, hf_state_dict, layer_idx: int, to_mcore: bool, is_mtp: bool = False):
@@ -1609,12 +1611,12 @@ class GPTBridge:
                 self._set_moe_state(
                     mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore, is_mtp=is_mtp))
             self._set_state_dict(mg_layer, 'pre_mlp_layernorm.weight', hf_state_dict,
-                                 f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+                                 self.hf_post_attention_layernorm_key, to_mcore)
         else:
             hf_state_dict.update(
                 self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
             self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
-                                 f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+                                 self.hf_post_attention_layernorm_key, to_mcore)
         return hf_state_dict
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
