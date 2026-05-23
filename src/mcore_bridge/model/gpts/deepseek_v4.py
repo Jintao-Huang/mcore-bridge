@@ -1,7 +1,9 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
+import torch
+from megatron.core import tensor_parallel
+from megatron.core.models.common.embeddings import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
 from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from typing import Optional
 
@@ -13,19 +15,169 @@ from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 
 try:
+    from megatron.core.pipeline_parallel.fine_grained_activation_offload import \
+        FineGrainedActivationOffloadingInterface as off_interface
     from megatron.core.transformer.experimental_attention_variant.deepseek_v4_hybrid_attention import \
-        DSv4HybridAttention as McoreDSv4HybridAttention
+        DSv4HybridSelfAttention as McoreDSv4HybridSelfAttention
+    from megatron.core.transformer.experimental_attention_variant.deepseek_v4_hybrid_attention import _q_rms_norm
+    from megatron.core.typed_torch import apply_module
 except ImportError:
-    McoreDSv4HybridAttention = object
+    McoreDSv4HybridSelfAttention = object
+    _q_rms_norm = None
+    apply_module = None
+    off_interface = None
 
 
-class DSv4HybridAttention(McoreDSv4HybridAttention):
+class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
 
     def __init__(self, config, *args, **kwargs):
-        assert McoreDSv4HybridAttention is not object, ('Please install the Megatron-Core dev branch: '
-                                                        '`pip install git+https://github.com/NVIDIA/Megatron-LM@dev`')
+        assert McoreDSv4HybridSelfAttention is not object, (
+            'Please install the Megatron-Core dev branch: '
+            '`pip install git+https://github.com/NVIDIA/Megatron-LM@dev`')
         super().__init__(config, *args, **kwargs)
-        print()
+        self.layer_type = self.config.hf_config.layer_types[self.layer_number - 1]
+        self.rope_layer_type = 'main' if self.layer_type == 'sliding_attention' else 'compress'
+
+    def get_query_key_value_tensors(
+        self,
+        hidden_states,
+        key_value_states=None,
+        position_ids=None,
+        packed_seq_params=None,
+        inference_context=None,
+        rotary_pos_emb=None,
+        *,
+        inference_params=None,
+    ):
+        """
+        Derives `query`, `key` and `value` tensors from `hidden_states`.
+        """
+        # s = sequence length, b = batch size, h = hidden size, n = num attention heads
+        # Attention heads [s, b, n*h]
+        assert (hidden_states.ndim == 3), f"hidden_states should be 3D, [s, b, n*h], got {hidden_states.ndim}D"
+        if packed_seq_params is not None:
+            assert (packed_seq_params.local_cp_size
+                    is None), 'dynamic_context_parallel is not supported with MLA yet and is planned for future. \
+            Please disable dynamic_context_parallel.'
+
+        assert (inference_context is None
+                and inference_params is None), 'Inference is not supported for DSv4HybridSelfAttention.'
+
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            cu_seqlens_q = packed_seq_params.cu_seqlens_q
+            cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
+        else:
+            cu_seqlens_q = cu_seqlens_kv = None
+
+        # =========================================
+        # QKV down projection and layernorm
+        # =========================================
+        # q_compressed: [s, b, q_lora_rank]
+        q_compressed, _ = self.linear_q_down_proj(hidden_states)
+
+        kv_compressed = hidden_states
+
+        if packed_seq_params is not None:
+            # If sequence packing, TE expect [t, h, d] shaped qkv input.
+            # In Megatron-Core, the qkv shape is [t, 1, h, d].
+            # So we need to reshape qkv from [t, 1, h, d] to [t, h, d].
+            q_compressed = q_compressed.squeeze(1)
+
+        # =========================================
+        # Apply norm
+        # =========================================
+
+        if self.config.q_lora_rank is not None:
+            # q_compressed: [num_tokens, q_lora_rank]
+            q_compressed = apply_module(self.q_layernorm)(q_compressed)
+
+        # =========================================
+        # QKV up projection and RoPE apply
+        # =========================================
+
+        def qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, rotary_pos_emb):
+            """
+            Apply the up projection and RoPE to the query and key.
+            When sequence packing enabled, the input tensors adopt a packed shape of [t, ...];
+            otherwise, they maintain the unpacked shape [s, b, ...]. In subsequent code comments,
+            we uniformly use [num_tokens, ...] to denote [s, b, ...] or [t, ...] for two cases.
+            """
+            # q_compressed: [num_tokens, q_lora_rank]
+            # q: [num_tokens, n * (qk_head_dim + qk_pos_emb_head_dim)]
+            q, _ = self.linear_q_up_proj(q_compressed)
+
+            # q: [num_tokens, n, q_head_dim]
+            q = q.view(*q.size()[:-1], self.num_attention_heads_per_partition, self.q_head_dim)
+            q = _q_rms_norm(q, self.config.layernorm_epsilon)
+
+            kv, _ = self.linear_kv_proj(kv_compressed)
+            kv = self.kv_layernorm(kv)
+
+            # [num_tokens, qk_pos_emb_head_dim] -> [num_tokens, 1, qk_pos_emb_head_dim]
+            q_len = q.size()[0]
+            if packed_seq_params is None or self.config.context_parallel_size == 1:
+                # Shorten rotary_pos_emb to the sequence length when inference_params
+                # is not provided. This makes sure we can run forward directly with
+                # any sequence length. During training, the sequence length is always
+                # the full rotary_pos_emb length, except for sequence packing + CP.
+                # When sequence packing and context parallel are both enabled, the
+                # position embedding will not split rotary_pos_emb, so it may exceed
+                # the sequence length on this CP rank, but we need the full rotary_pos_emb
+                # to cover the full sequence, so we do not shorten it here.
+                rotary_pos_emb = rotary_pos_emb[0:q_len]
+
+            # q_no_pe: [num_tokens, n, qk_head_dim]
+            # q_pos_emb: [num_tokens, n, qk_pos_emb_head_dim]
+            pos_dim = self.config.qk_pos_emb_head_dim
+            q_no_pe, q_pos_emb = torch.split(q, [q.shape[-1] - pos_dim, pos_dim], dim=-1)
+
+            # RoPE and query (shared for wkv and latent)
+            # q_pos_emb: [num_tokens, n, qk_pos_emb_head_dim]
+            q_pos_emb = apply_rotary_pos_emb(
+                q_pos_emb,
+                rotary_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_q,
+                cp_group=self.pg_collection.cp,
+                mla_rotary_interleaved=True,
+                mla_output_remove_interleaving=True,
+            )
+            # query: [num_tokens, n, (qk_head_dim + v_head_dim)]
+            query = torch.cat([q_no_pe, q_pos_emb], dim=-1)
+
+            kv_no_pe, k_pos_emb = torch.split(kv, [kv.size(-1) - pos_dim, pos_dim], dim=-1)
+
+            # k_pos_emb:[num_tokens, 1, qk_pos_emb_head_dim]
+            k_pos_emb = apply_rotary_pos_emb(
+                k_pos_emb,
+                rotary_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens_kv,
+                cp_group=self.pg_collection.cp,
+                mla_rotary_interleaved=True,
+                mla_output_remove_interleaving=True,
+            )
+
+            # Single head: key = value = [num_tokens, 1, v_head_dim]
+            kv = torch.cat([kv_no_pe, k_pos_emb], dim=-1).unsqueeze(-2)
+            key = kv
+            value = kv
+
+            query = query.contiguous()
+            key = key.contiguous()
+            value = value.contiguous()
+
+            return query, key, value
+
+        if self.recompute_up_proj:
+            quantization = self.config.fp8 or self.config.fp4
+            self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=quantization)
+            query, key, value = self.qkv_up_checkpoint.checkpoint(qkv_up_proj_and_rope_apply, q_compressed,
+                                                                  kv_compressed, rotary_pos_emb)
+        else:
+            query, key, value = qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, rotary_pos_emb)
+
+        return query, key, value, q_compressed, kv_compressed
 
     def forward(
         self,
@@ -44,7 +196,105 @@ class DSv4HybridAttention(McoreDSv4HybridAttention):
         *,
         inference_params=None,
     ):
-        pass
+        """Forward pass for DeepSeek-v4 Hybrid Attention"""
+        rotary_pos_emb = rotary_pos_emb[self.rope_layer_type]
+        assert (attention_bias is None), 'Attention bias should not be passed into DSv4HybridAttention.'
+        assert (rotary_pos_cos is None
+                and rotary_pos_sin is None), 'DSv4HybridAttention does not support Flash Decoding'
+        assert (not rotary_pos_cos_sin), 'Flash-infer rope has not been tested with DSv4HybridAttention.'
+        assert (inference_context is None
+                and inference_params is None), 'Inference is not supported for DSv4HybridAttention.'
+
+        # =====================
+        # Query, Key, and Value
+        # =====================
+        # Get the query, key and value tensors based on the type of attention -
+        # self or cross attn.
+        query, key, value, q_compressed, kv_compressed = self.get_query_key_value_tensors(
+            hidden_states,
+            key_value_states,
+            position_ids,
+            packed_seq_params,
+            rotary_pos_emb=rotary_pos_emb,
+            inference_context=inference_context,
+        )
+
+        # TODO: Currently, TE can only accept contiguous tensors for MLA
+        query = query.contiguous()
+        key = key.contiguous()
+        value = value.contiguous()
+
+        # ==================================
+        # core attention computation
+        # ==================================
+        # Need corresponding TE change
+        core_attn_manager = off_interface(self.offload_core_attention and self.training, query, 'core_attn')
+        with core_attn_manager as query:
+            core_attn_out = self.core_attention(
+                query,
+                key,
+                value,
+                attention_mask,
+                packed_seq_params=packed_seq_params,
+                x=hidden_states,
+                qr=q_compressed,
+            )
+        core_attn_out = core_attn_manager.group_offload(core_attn_out, forced_released_tensors=[query, key, value])
+
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            # reshape to same output shape as unpacked case
+            # (t, np, hn) -> (t, b=1, h=np*hn)
+            # t is the pack size = sum (sq_i)
+            # note that batch is a dummy dimension in the packed case
+            core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
+
+        if self.recompute_up_proj:
+            assert self.qkv_up_checkpoint is not None
+            self.qkv_up_checkpoint.discard_output_and_register_recompute(core_attn_out)
+            self.qkv_up_checkpoint = None
+
+        # inverse RoPE on last qk_pos_emb_head_dim of each head
+        seq_len = core_attn_out.size(0)
+        n_heads = self.num_attention_heads_per_partition
+        pos_dim = self.config.qk_pos_emb_head_dim
+        core_attn_out = core_attn_out.view(seq_len, core_attn_out.size(1), n_heads, -1)
+        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
+        if packed_seq:
+            cu_seqlens_kv = (
+                packed_seq_params.cu_seqlens_kv_padded
+                if packed_seq_params.cu_seqlens_kv_padded is not None else packed_seq_params.cu_seqlens_kv)
+        else:
+            cu_seqlens_kv = None
+
+        content_part, rot_part = torch.split(core_attn_out, [core_attn_out.size(-1) - pos_dim, pos_dim], dim=-1)
+        rot_part = apply_rotary_pos_emb(
+            rot_part,
+            rotary_pos_emb,
+            self.config,
+            cu_seqlens=cu_seqlens_kv,
+            cp_group=self.pg_collection.cp,
+            mla_rotary_interleaved=True,
+            inverse=True,
+            mla_output_remove_interleaving=True,
+        )
+        core_attn_out = torch.cat([content_part, rot_part], dim=-1)
+        core_attn_out = core_attn_out.view(seq_len, core_attn_out.size(1), -1)
+
+        # Grouped output
+        core_attn_out = core_attn_out.view(core_attn_out.size(0), core_attn_out.size(1), self.o_local_groups, -1)
+        wo_a_weight = self.linear_o_group_proj.view(self.o_local_groups, self.config.o_lora_rank, -1)
+        core_attn_out = torch.einsum('...gd,grd->...gr', core_attn_out, wo_a_weight)
+        core_attn_out = core_attn_out.reshape(*core_attn_out.shape[:-2], -1)
+
+        # =================
+        # Output. [sq, b, h]
+        # =================
+        attn_proj_manager = off_interface(self.offload_attn_proj, core_attn_out, 'attn_proj')
+        with attn_proj_manager as core_attn_out:
+            output, bias = self.linear_proj(core_attn_out)
+        output = attn_proj_manager.group_offload(output, forced_released_tensors=[core_attn_out])
+
+        return output, bias
 
 
 class DeepseekV4GPTModel(GPTModel):
@@ -84,7 +334,10 @@ class DeepseekV4Loader(ModelLoader):
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import \
             get_transformer_block_with_experimental_attention_variant_spec
-        return get_transformer_block_with_experimental_attention_variant_spec(self.config, vp_stage)
+        transformer_layer_spec = get_transformer_block_with_experimental_attention_variant_spec(self.config, vp_stage)
+        for layer_spec in transformer_layer_spec.layer_specs:
+            layer_spec.submodules.self_attention.module = DSv4HybridSelfAttention
+        return transformer_layer_spec
 
 
 class DeepseekV4Bridge(GPTBridge):

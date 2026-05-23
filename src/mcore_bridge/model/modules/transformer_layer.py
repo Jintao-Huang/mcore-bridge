@@ -227,8 +227,11 @@ class TransformerLayer(McoreTransformerLayer):
             t: torch.Tensor,
             freqs: torch.Tensor,
             rotary_interleaved: bool = False,
+            mla_rotary_interleaved: bool = False,
             multi_latent_attention: Optional[bool] = None,
             mscale: float = 1.0,
+            inverse: bool = False,
+            mla_output_remove_interleaving: bool = False,
             **kwargs,
         ) -> torch.Tensor:
             """Apply rotary positional embedding to input tensor T.
@@ -249,7 +252,9 @@ class TransformerLayer(McoreTransformerLayer):
             t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
             if multi_latent_attention is None:
                 multi_latent_attention = self.config.multi_latent_attention
-            if multi_latent_attention:
+            if mla_rotary_interleaved is None:
+                mla_rotary_interleaved = multi_latent_attention
+            if mla_rotary_interleaved:
                 x1 = t[..., 0::2]
                 x2 = t[..., 1::2]
                 t = torch.cat((x1, x2), dim=-1)
@@ -258,8 +263,17 @@ class TransformerLayer(McoreTransformerLayer):
             # second part is sine component, need to change signs with _rotate_half method
             cos_ = (torch.cos(freqs) * mscale).to(t.dtype)
             sin_ = (torch.sin(freqs) * mscale).to(t.dtype)
+            if inverse:
+                sin_ = -sin_
 
             t = (t * cos_) + (rope_utils._rotate_half(t, rotary_interleaved) * sin_)
+            # Fallback to original permutation
+            # DSv4 applies rope on V and O, so we need to uninterleave the tensor.
+            # The existing MLA code is safe because the dot product is permutation-invariant.
+            if mla_rotary_interleaved and mla_output_remove_interleaving:
+                x1, x2 = torch.chunk(t, 2, dim=-1)
+                t = torch.stack((x1, x2), dim=-1).flatten(start_dim=-2)
+
             return torch.cat((t, t_pass), dim=-1)
 
         rope_utils._apply_rotary_pos_emb_bshd = _apply_rotary_pos_emb_bshd
