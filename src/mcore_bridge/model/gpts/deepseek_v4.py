@@ -411,6 +411,10 @@ class DeepseekV4Bridge(GPTBridge):
         for key in ['hc_head_base', 'hc_head_fn', 'hc_head_scale']:
             self._set_state_dict(lm_model, f'decoder.{key}', hf_state_dict, f'model.{key}', to_mcore)
 
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+        super()._set_router(mg_mlp, hf_state_dict, to_mcore)
+        self._set_state_dict(mg_mlp, 'router.tid2eid', hf_state_dict, 'gate.tid2eid', to_mcore)
+
 
 register_model(
     ModelMeta(

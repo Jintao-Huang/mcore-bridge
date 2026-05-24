@@ -299,7 +299,7 @@ class GPTModel(McoreGPTModel):
                 assert padding_mask.shape[1] % tp_size == 0, f'padding_mask.shape: {padding_mask.shape}'
                 padding_mask = torch.chunk(padding_mask, tp_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
             kwargs['padding_mask'] = padding_mask.contiguous()
-        
+
         extra_block_kwargs = extra_block_kwargs or {}
         if self.config.moe_n_hash_layers > 0:
             extra_block_kwargs['input_ids'] = input_ids
