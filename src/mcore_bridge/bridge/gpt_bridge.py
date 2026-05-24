@@ -678,14 +678,17 @@ class GPTBridge:
         self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, self.hf_q_norm_key, to_mcore)
         self._set_state_dict(mg_attn, 'k_layernorm.weight', hf_state_dict, self.hf_k_norm_key, to_mcore)
 
-    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore, **kwargs):
+        moe_router_enable_expert_bias = kwargs.get('moe_router_enable_expert_bias')
+        if moe_router_enable_expert_bias is None:
+            moe_router_enable_expert_bias = self.config.moe_router_enable_expert_bias
         hf_gate_key = self.hf_gate_key
         if self.llm_model_type == 'gpt_oss':
             hf_gate_key = 'router.weight'
         self._set_state_dict(mg_mlp, 'router.weight', hf_state_dict, hf_gate_key, to_mcore)
         if self.config.add_bias_linear:
             self._set_state_dict(mg_mlp, 'router.bias', hf_state_dict, hf_gate_key.replace('weight', 'bias'), to_mcore)
-        if self.config.moe_router_enable_expert_bias:
+        if moe_router_enable_expert_bias:
             self._set_state_dict(mg_mlp, 'router.expert_bias', hf_state_dict, self.hf_expert_bias_key, to_mcore)
 
     def _set_moe_state(

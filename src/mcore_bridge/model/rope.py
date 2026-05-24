@@ -25,11 +25,15 @@ class DummyConfig(RotaryEmbeddingConfigMixin):
 
 
 def _get_dummy_config(config):
+    if config.multi_latent_attention and config.partial_rotary_factor is None:
+        head_dim = config.qk_pos_emb_head_dim
+    else:
+        head_dim = config.kv_channels
     dummy_config = DummyConfig(
         rope_scaling=config.rope_scaling,
         rope_theta=config.rotary_base,
         max_position_embeddings=config.max_position_embeddings,
-        head_dim=config.qk_pos_emb_head_dim if config.multi_latent_attention else config.kv_channels,
+        head_dim=head_dim,
         hidden_size=config.hidden_size,
         num_attention_heads=config.num_attention_heads,
     )

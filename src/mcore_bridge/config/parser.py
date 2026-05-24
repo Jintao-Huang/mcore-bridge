@@ -156,9 +156,9 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             if 'v_head_dim' not in res:
                 res['v_head_dim'] = res['kv_channels']
             res['experimental_attention_variant'] = 'dsv4_hybrid'
+            res['moe_router_enable_expert_bias'] = True
             res['csa_window_size'] = window_size
             res['enable_hyper_connections'] = True
-            res.pop('partial_rotary_factor', None)
             csa_compress_ratios = res.pop('csa_compress_ratios', None)
             res['csa_compress_ratios'] = [csa_compress_ratios.get(layer_type, 0) for layer_type in layer_types]
             moe_n_hash_layers = res.pop('moe_n_hash_layers', None)

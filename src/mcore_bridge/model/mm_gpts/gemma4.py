@@ -445,7 +445,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 if use_alternative_attention else text_config.num_key_value_heads)
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
-    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore, **kwargs):
         self._set_state_dict(mg_mlp, 'router.weight', hf_state_dict, 'router.proj.weight', to_mcore)
         for key in ['per_expert_scale', 'scale']:
             self._set_state_dict(mg_mlp, key, hf_state_dict, f'router.{key}', to_mcore)

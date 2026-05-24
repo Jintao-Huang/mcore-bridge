@@ -349,6 +349,7 @@ class DeepseekV4Bridge(GPTBridge):
     hf_score_key = 'model.score.weight'
     hf_input_layernorm_key = 'attn_norm.weight'
     hf_post_attention_layernorm_key = 'ffn_norm.weight'
+    hf_expert_bias_key = 'gate.bias'
 
     def _convert_hf_state_dict(self, hf_state_dict, to_mcore):
         res = super()._convert_hf_state_dict(hf_state_dict, to_mcore)
@@ -429,12 +430,13 @@ class DeepseekV4Bridge(GPTBridge):
         for key in ['hc_head_base', 'hc_head_fn', 'hc_head_scale']:
             self._set_state_dict(lm_model, f'decoder.{key}', hf_state_dict, f'model.{key}', to_mcore)
 
-    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore, **kwargs):
         is_hash_layer = False if mg_mlp is None else mg_mlp.router.is_hash_layer
         is_hash_layer = self._reduce_tensor_pp_group(is_hash_layer, to_mcore)
-        super()._set_router(mg_mlp, hf_state_dict, to_mcore)
         if is_hash_layer:
             self._set_state_dict(mg_mlp, 'router.tid2eid', hf_state_dict, 'gate.tid2eid', to_mcore)
+            kwargs['moe_router_enable_expert_bias'] = False
+        super()._set_router(mg_mlp, hf_state_dict, to_mcore, **kwargs)
 
 
 register_model(
