@@ -341,6 +341,7 @@ class DeepseekV4Loader(ModelLoader):
 
 
 class DeepseekV4Bridge(GPTBridge):
+    hf_mtp_prefix = 'model.mtp'
     hf_embed_key = 'model.embed.weight'
     hf_attn_prefix = 'attn'
     hf_mlp_prefix = 'ffn'
@@ -400,6 +401,23 @@ class DeepseekV4Bridge(GPTBridge):
         if self.config.qk_layernorm:
             self._set_state_dict(mg_attn, 'q_layernorm.weight', hf_state_dict, 'q_norm.weight', to_mcore)
             self._set_state_dict(mg_attn, 'kv_layernorm.weight', hf_state_dict, 'kv_norm.weight', to_mcore)
+        has_compressor = False if mg_attn is None else mg_attn.core_attention.compressor is not None
+        has_indexer = False if mg_attn is None else mg_attn.core_attention.indexer is not None
+        if has_compressor:
+            for mg_key, hf_key in zip(['ape', 'linear_wkv.weight', 'linear_wgate.weight', 'norm.weight'],
+                                      ['ape', 'wkv.weight', 'wgate.weight', 'norm.weight']):
+                self._set_state_dict(mg_attn, f'core_attention.compressor.{mg_key}', hf_state_dict,
+                                     f'compressor.{hf_key}', to_mcore)
+        if has_indexer:
+            for mg_key, hf_key in zip(['linear_wq_b.weight', 'linear_weights_proj.weight'],
+                                      ['wq_b.weight', 'weights_proj.weight']):
+                self._set_state_dict(mg_attn, f'core_attention.indexer.{mg_key}', hf_state_dict, f'indexer.{hf_key}',
+                                     to_mcore)
+            for mg_key, hf_key in zip(['ape', 'linear_wkv.weight', 'linear_wgate.weight', 'norm.weight'],
+                                      ['ape', 'wkv.weight', 'wgate.weight', 'norm.weight']):
+                self._set_state_dict(mg_attn, f'core_attention.indexer.compressor.{mg_key}', hf_state_dict,
+                                     f'indexer.compressor.{hf_key}', to_mcore)
+
         if to_mcore:
             hf_state_dict = {}
         else:
@@ -412,8 +430,11 @@ class DeepseekV4Bridge(GPTBridge):
             self._set_state_dict(lm_model, f'decoder.{key}', hf_state_dict, f'model.{key}', to_mcore)
 
     def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+        is_hash_layer = False if mg_mlp is None else mg_mlp.router.is_hash_layer
+        is_hash_layer = self._reduce_tensor_pp_group(is_hash_layer, to_mcore)
         super()._set_router(mg_mlp, hf_state_dict, to_mcore)
-        self._set_state_dict(mg_mlp, 'router.tid2eid', hf_state_dict, 'gate.tid2eid', to_mcore)
+        if is_hash_layer:
+            self._set_state_dict(mg_mlp, 'router.tid2eid', hf_state_dict, 'gate.tid2eid', to_mcore)
 
 
 register_model(
