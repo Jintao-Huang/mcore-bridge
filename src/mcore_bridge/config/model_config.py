@@ -216,6 +216,7 @@ class ModelConfig(TransformerConfig):
     mhc_sinkhorn_iterations: int = 20
     mhc_init_gating_factor: float = 0.01
     moe_n_hash_layers: int = 0
+    actual_vocab_size: Optional[int] = None
 
     # mtp
     mtp_decoder_input_detach: bool = False
@@ -302,6 +303,7 @@ class ModelConfig(TransformerConfig):
 
         if self.add_bias_linear:
             self.add_qkv_bias = True
+        self.actual_vocab_size = self.padded_vocab_size
         self.batch_p2p_comm = not self.overlap_p2p_comm
         if self.swiglu:
             self.activation_func = F.silu

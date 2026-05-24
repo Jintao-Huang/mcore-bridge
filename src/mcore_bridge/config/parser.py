@@ -63,7 +63,7 @@ config_mapping = {
     'o_lora_rank': ['o_lora_rank'],
     'num_residual_streams': ['hc_mult'],
     'mhc_sinkhorn_iterations': ['hc_sinkhorn_iters'],
-    'moe_n_hash_layers': ['num_hash_layers'],
+    'moe_n_hash_layers': ['mlp_layer_types'],
     'activation_func_clamp_value': ['swiglu_limit'],
     # other
     'original_max_position_embeddings': ['original_max_position_embeddings'],
@@ -130,7 +130,6 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
     first_k_dense_replace = res.pop('first_k_dense_replace', None)
     n_shared_experts = res.pop('n_shared_experts', None)
     layer_types = res.pop('layer_types', None)
-    csa_compress_ratios = res.pop('csa_compress_ratios', None)
     mlp_ffn_hidden_size = res.pop('mlp_ffn_hidden_size', None)
     interleave_moe_layer_step = res.pop('interleave_moe_layer_step', None)
     window_size = res.pop('window_size', None)
@@ -160,7 +159,10 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             res['csa_window_size'] = window_size
             res['enable_hyper_connections'] = True
             res.pop('partial_rotary_factor', None)
+            csa_compress_ratios = res.pop('csa_compress_ratios', None)
             res['csa_compress_ratios'] = [csa_compress_ratios.get(layer_type, 0) for layer_type in layer_types]
+            moe_n_hash_layers = res.pop('moe_n_hash_layers', None)
+            res['moe_n_hash_layers'] = len([layer for layer in moe_n_hash_layers if layer == 'hash_moe'])
     elif llm_model_type == 'hunyuan':
         # Since HunYuan’s attention applies RoPE before using q/k_layernorm,
         # which is incompatible with megatron-core, support is not provided here.
