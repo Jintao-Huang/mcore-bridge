@@ -32,16 +32,17 @@ from mcore_bridge.config import ModelConfig
 class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
 
     def __init__(self, config: ModelConfig, submodules, *args, **kwargs):
-        if config.fp8_param:
+        replace_eh_proj = submodules.eh_proj is not None and config.fp8_param
+        if replace_eh_proj:
             eh_proj = submodules.eh_proj
             submodules.eh_proj = IdentityOp
         try:
             super().__init__(config, submodules, *args, **kwargs)
         finally:
-            if config.fp8_param:
+            if replace_eh_proj:
                 submodules.eh_proj = eh_proj
         self.tp_group = getattr(self, 'tp_group', None)
-        if not config.fp8_param:
+        if not replace_eh_proj:
             return
         fp8_context = transformer_engine.pytorch.fp8_model_init(enabled=False)
         with fp8_context:
@@ -375,6 +376,8 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         """
         Concatenate the tokens before sending to transformer layer.
         """
+        if getattr(self, 'mhc_enabled', False):
+            return super()._concat_embeddings(hidden_states, decoder_input)
         if apply_module is None:
             decoder_input = self.enorm(decoder_input)
             hidden_states = self.hnorm(hidden_states)
