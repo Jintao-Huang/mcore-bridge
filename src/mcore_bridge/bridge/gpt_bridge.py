@@ -357,18 +357,18 @@ class GPTBridge:
             dist.all_reduce(src_rank, group=pp_group)
             src_rank = dist.get_global_rank(pp_group, src_rank.item())
             meta_data = torch.zeros(10, dtype=torch.int64, device='cuda')
-            dtype_mapping = {torch.float64: 0, torch.float32: 1, torch.float16: 2, torch.bfloat16: 3, torch.uint8: 4}
-            dtype_mapping_r = {v: k for k, v in dtype_mapping.items()}
+            dtype_mapping = [torch.float64, torch.float32, torch.float16, torch.bfloat16, torch.uint8, torch.int32]
+            dtype_mapping_r = {v: k for k, v in enumerate(dtype_mapping)}
             if tensor is None:
                 dist.broadcast(meta_data, src=src_rank, group=pp_group)
                 shape = meta_data[1:1 + meta_data[0]].tolist()
-                dtype = dtype_mapping_r[meta_data[-1].item()]
+                dtype = dtype_mapping[meta_data[-1].item()]
                 tensor = torch.empty(shape, device='cuda', dtype=dtype)
                 dist.broadcast(tensor, src=src_rank, group=pp_group)
             else:
                 meta_data[0] = tensor.ndim
                 meta_data[1:1 + tensor.ndim] = torch.tensor(tensor.shape, dtype=torch.int64, device='cuda')
-                meta_data[-1] = dtype_mapping[tensor.dtype]
+                meta_data[-1] = dtype_mapping_r[tensor.dtype]
                 dist.broadcast(meta_data, src=src_rank, group=pp_group)
                 dist.broadcast(tensor, src=src_rank, group=pp_group)
         return tensor

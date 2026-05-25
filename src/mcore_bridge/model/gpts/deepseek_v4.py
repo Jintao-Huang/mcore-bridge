@@ -404,6 +404,8 @@ class DeepseekV4Bridge(GPTBridge):
             self._set_state_dict(mg_attn, 'kv_layernorm.weight', hf_state_dict, 'kv_norm.weight', to_mcore)
         has_compressor = False if mg_attn is None else mg_attn.core_attention.compressor is not None
         has_indexer = False if mg_attn is None else mg_attn.core_attention.indexer is not None
+        has_compressor = self._reduce_tensor_pp_group(has_compressor, to_mcore)
+        has_indexer = self._reduce_tensor_pp_group(has_indexer, to_mcore)
         if has_compressor:
             for mg_key, hf_key in zip(['ape', 'linear_wkv.weight', 'linear_wgate.weight', 'norm.weight'],
                                       ['ape', 'wkv.weight', 'wgate.weight', 'norm.weight']):
