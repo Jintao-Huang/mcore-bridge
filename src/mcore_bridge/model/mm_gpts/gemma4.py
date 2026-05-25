@@ -842,8 +842,8 @@ class Gemma4Loader(ModelLoader):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = Gemma4TransformerLayer
 
-    def _replace_router(self, transformer_layer_spec, mlp_key='mlp'):
-        super()._replace_router(transformer_layer_spec, mlp_key='experts_mlp')
+    def _replace_router(self, transformer_layer_spec, mlp_key='experts_mlp'):
+        super()._replace_router(transformer_layer_spec, mlp_key=mlp_key)
 
 
 register_model(

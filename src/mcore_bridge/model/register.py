@@ -150,7 +150,7 @@ class ModelLoader:
             mlp_spec = getattr(layer_spec.submodules, mlp_key, None)
             if mlp_spec is not None:
                 if isinstance(mlp_spec, partial):
-                    mlp_submodules = mlp_spec.keywords['submodules']
+                    mlp_submodules = mlp_spec.keywords.get('submodules')
                 else:
                     mlp_submodules = mlp_spec.submodules
                 if getattr(mlp_submodules, 'router', None) is McoreTopKRouter:
