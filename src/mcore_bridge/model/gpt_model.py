@@ -285,7 +285,7 @@ class GPTModel(McoreGPTModel):
             input_tensor = self.get_input_tensor()
             input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
             self.set_input_tensor(input_tensor)
-        kwargs = {}
+        extra_block_kwargs = extra_block_kwargs or {}
         full_attention_mask = attention_mask
         if isinstance(full_attention_mask, dict):
             full_attention_mask = full_attention_mask['full_attention']
@@ -298,9 +298,8 @@ class GPTModel(McoreGPTModel):
             if self.config.sequence_parallel and tp_size > 1:
                 assert padding_mask.shape[1] % tp_size == 0, f'padding_mask.shape: {padding_mask.shape}'
                 padding_mask = torch.chunk(padding_mask, tp_size, dim=1)[mpu.get_tensor_model_parallel_rank()]
-            kwargs['padding_mask'] = padding_mask.contiguous()
+            extra_block_kwargs['padding_mask'] = padding_mask.contiguous()
 
-        extra_block_kwargs = extra_block_kwargs or {}
         if self.config.moe_n_hash_layers > 0:
             extra_block_kwargs['input_ids'] = input_ids
 
@@ -315,7 +314,6 @@ class GPTModel(McoreGPTModel):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
             **extra_block_kwargs,
-            **kwargs,
         )
 
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
