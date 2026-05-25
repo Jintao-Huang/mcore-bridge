@@ -341,7 +341,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
             # True so that the fp8 weight caching can be triggered correctly.
             with transformer_layer_fp8_context:
                 if getattr(self, 'mtp_layer_pattern', None) is not None:
-                    hidden_states = self.mtp_model_layer(
+                    hidden_states = self.transformer_layer(
                         hidden_states=hidden_states,
                         attention_mask=attention_mask,
                         rotary_pos_emb=rotary_pos_emb,
@@ -351,7 +351,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                     )
                 else:
                     # GPT path: single TransformerLayer
-                    hidden_states, _ = self.mtp_model_layer(
+                    hidden_states, _ = self.transformer_layer(
                         hidden_states=hidden_states,
                         attention_mask=attention_mask,
                         context=context,
