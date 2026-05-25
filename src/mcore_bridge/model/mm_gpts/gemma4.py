@@ -152,12 +152,15 @@ class Gemma4SelfAttention(SelfAttention):
             if self.use_alternative_attention else text_config.num_key_value_heads)
         # Shared KV across the trailing layers
         self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
-        first_kv_shared_layer_idx = config.num_layers - self.num_kv_shared_layers
-        self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
-        prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
-        self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == len(
-            prev_layers) - 1 - prev_layers[::-1].index(text_config.layer_types[layer_idx])
-
+        if self.num_kv_shared_layers:
+            first_kv_shared_layer_idx = config.num_layers - self.num_kv_shared_layers
+            self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+            prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
+            self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == len(
+                prev_layers) - 1 - prev_layers[::-1].index(text_config.layer_types[layer_idx])
+        else:
+            self.is_kv_shared_layer = False
+            self.store_full_length_kv = False
         orig_kv_channels = config.kv_channels
         orig_num_query_groups = config.num_query_groups
         orig_k_layernorm = submodules.k_layernorm
@@ -698,6 +701,7 @@ class Gemma4TransformerLayer(TransformerLayer):
     def __init__(self, config, submodules, *args, **kwargs):
         super().__init__(config, submodules, *args, **kwargs)
         text_config = config.hf_config.text_config
+        self.layer_type = text_config.layer_types[self.layer_number - 1]
         self.enable_moe_block = text_config.enable_moe_block
         if self.enable_moe_block:
             self.experts_mlp = self._build_mlp(submodules.experts_mlp)
@@ -748,6 +752,8 @@ class Gemma4TransformerLayer(TransformerLayer):
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
     def _forward_attention(self, hidden_states: Tensor, **kwargs):
+        kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][self.layer_type]
+        kwargs['attention_mask'] = kwargs['attention_mask'][self.layer_type]
         context = kwargs.pop('context', None)
         residual = hidden_states
         input_layernorm_output = self.input_layernorm(hidden_states)
@@ -805,13 +811,9 @@ class Gemma4GPTModel(MultimodalGPTModel):
 class Gemma4TransformerBlock(TransformerBlock):
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
-        layer_number = layer.layer_number - 1
         per_layer_inputs = kwargs.pop('per_layer_inputs', None)
         if per_layer_inputs is not None:
-            kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
-        layer_type = self.config.hf_config.text_config.layer_types[layer_number]
-        kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][layer_type]
-        kwargs['attention_mask'] = kwargs['attention_mask'][layer_type]
+            kwargs['per_layer_input'] = per_layer_inputs[:, :, layer.layer_number - 1]
         return super()._layer_forward(layer, hidden_states, **kwargs)
 
 
