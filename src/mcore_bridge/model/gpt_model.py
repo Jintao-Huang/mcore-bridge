@@ -261,6 +261,12 @@ class GPTModel(McoreGPTModel):
         if self.config.position_embedding_type == 'mrope' and position_ids.ndim == 2:  # qwen3_asr
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
         inference_context = deprecate_inference_params(inference_context, inference_params)
+
+        mtp_decoder_input = decoder_input
+        if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:
+            input_tensor = self.get_input_tensor()
+            input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
+            self.set_input_tensor(input_tensor)
         # There is a difference in whether rotary_pos_emb can be fused between the decoder and MTP.
         decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
             self._preprocess(
@@ -280,11 +286,6 @@ class GPTModel(McoreGPTModel):
             else:
                 decoder_rotary_pos_emb = rotary_pos_emb[position_ids[0]]
 
-        mtp_decoder_input = decoder_input
-        if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:
-            input_tensor = self.get_input_tensor()
-            input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
-            self.set_input_tensor(input_tensor)
         extra_block_kwargs = extra_block_kwargs or {}
         full_attention_mask = attention_mask
         if isinstance(full_attention_mask, dict):
