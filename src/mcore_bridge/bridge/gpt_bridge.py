@@ -1636,10 +1636,13 @@ class GPTBridge:
                     for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
                         getattr(hyper_connection, f'alpha_{alpha_suffix}').data[:] = alpha[i]
                 else:
-                    alpha = []
-                    for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
-                        alpha.append(self._get_weight(hyper_connection, f'alpha_{alpha_suffix}')[0])
-                    hf_state_dict[f'hc_{hf_key}_scale'] = torch.concat(alpha, dim=0)
+                    alpha = None
+                    if hyper_connection is not None:
+                        alpha = []
+                        for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
+                            alpha.append(getattr(hyper_connection, f'alpha_{alpha_suffix}', None))
+                        alpha = torch.concat(alpha, dim=0)
+                    hf_state_dict[f'hc_{hf_key}_scale'] = self._get_weight(alpha, 'alpha')[0]
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         hf_prefix = f'{hf_prefix}{layer_idx}.'
