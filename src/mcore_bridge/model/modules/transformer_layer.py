@@ -227,7 +227,7 @@ class TransformerLayer(McoreTransformerLayer):
             t: torch.Tensor,
             freqs: torch.Tensor,
             rotary_interleaved: bool = False,
-            mla_rotary_interleaved: bool = False,
+            mla_rotary_interleaved: Optional[bool] = None,
             multi_latent_attention: Optional[bool] = None,
             mscale: float = 1.0,
             inverse: bool = False,

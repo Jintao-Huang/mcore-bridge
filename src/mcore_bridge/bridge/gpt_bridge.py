@@ -1628,7 +1628,9 @@ class GPTBridge:
             hyper_connection = None if mg_layer is None else getattr(mg_layer, key)
             self._set_state_dict(hyper_connection, 'mapping_proj.weight', hf_state_dict, f'hc_{hf_key}_fn', to_mcore)
             self._set_state_dict(hyper_connection, 'bias', hf_state_dict, f'hc_{hf_key}_base', to_mcore)
-            if hyper_connection is not None:
+            has_hyper_connection = hyper_connection is not None
+            has_hyper_connection = self._reduce_tensor_pp_group(has_hyper_connection, to_mcore)
+            if has_hyper_connection:
                 if to_mcore:
                     alpha = hf_state_dict[f'hc_{hf_key}_scale'].load()
                     for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
@@ -1636,8 +1638,8 @@ class GPTBridge:
                 else:
                     alpha = []
                     for i, alpha_suffix in enumerate(['pre', 'post', 'res']):
-                        alpha.append(getattr(hyper_connection, f'alpha_{alpha_suffix}'))
-                    hf_state_dict[f'hc_{hf_key}_scale'] = torch.concat(alpha)
+                        alpha.append(self._get_weight(hyper_connection, f'alpha_{alpha_suffix}')[0])
+                    hf_state_dict[f'hc_{hf_key}_scale'] = torch.concat(alpha, dim=0)
 
     def _set_layer_state(self, mg_layer, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         hf_prefix = f'{hf_prefix}{layer_idx}.'
@@ -1740,6 +1742,7 @@ class GPTBridge:
         if to_mcore:
             yield
         else:
+            hf_state_dict = self._convert_hf_state_dict(hf_state_dict, to_mcore)
             yield from list(self._add_prefix(hf_state_dict, hf_prefix).items())
             hf_state_dict = {}
         layer_idx = 0
@@ -1773,6 +1776,7 @@ class GPTBridge:
             if to_mcore:
                 yield
             else:
+                res = self._convert_hf_state_dict(res, to_mcore)
                 yield from list(self._add_prefix(res, hf_prefix).items())
                 hf_state_dict = {}
 
@@ -1788,6 +1792,7 @@ class GPTBridge:
                 if to_mcore:
                     yield
                 else:
+                    res = self._convert_hf_state_dict(res, to_mcore)
                     yield from list(self._add_prefix(res, hf_prefix).items())
                     hf_state_dict = {}
         if not to_mcore or is_pp_last_stage:
