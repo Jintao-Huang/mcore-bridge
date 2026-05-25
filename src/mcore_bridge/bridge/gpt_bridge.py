@@ -1835,9 +1835,12 @@ class GPTBridge:
             hf_state_dict = {}
         self._convert_mtp_extra(mtp_layer, hf_state_dict, to_mcore, origin_hf_state_dict)
         transformer_layer = None if mtp_layer is None else mtp_layer.transformer_layer
-        # TODO: check
+        self._convert_mtp_embeds(lm_model, hf_state_dict, to_mcore)
         hf_state_dict.update(self._set_layer_attn(transformer_layer, hf_state_dict, -1, to_mcore))
         hf_state_dict.update(self._set_layer_mlp(transformer_layer, hf_state_dict, -1, to_mcore, is_mtp=True))
+        if self.config.enable_hyper_connections:
+            self._set_hyper_connection(transformer_layer, hf_state_dict, -1, to_mcore)
+
         if to_mcore:
             hf_state_dict = {}
         else:

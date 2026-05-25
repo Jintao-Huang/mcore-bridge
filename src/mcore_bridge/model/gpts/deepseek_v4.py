@@ -444,6 +444,8 @@ class DeepseekV4Bridge(GPTBridge):
         for key in ['enorm.weight', 'hnorm.weight', 'e_proj.weight', 'h_proj.weight']:
             self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
         self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, 'norm.weight', to_mcore)
+        for key in ['hc_head_base', 'hc_head_fn', 'hc_head_scale']:
+            self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
 
     def _convert_mtp_embeds(self, lm_model, hf_state_dict, to_mcore):
         if not to_mcore:
