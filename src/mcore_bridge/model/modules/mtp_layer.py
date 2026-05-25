@@ -229,7 +229,6 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
             # quantized recompute on either fp8 or fp4 must go through
             # ``te_checkpoint``. Matches ``transformer_block``'s policy.
             if self.config.fp8 or self.config.fp4:
-                from megatron.core.extensions.transformer_engine import te_checkpoint
 
                 return te_checkpoint(
                     custom_forward,
