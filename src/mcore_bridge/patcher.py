@@ -414,7 +414,8 @@ def _patch_mtp():
         else:
             hidden_states = hidden_states_list[offset]
         for layer_number in range(self.config.mtp_unroll_steps):
-            (hidden_states, input_ids, position_ids, decoder_input) = self.layers[layer_number % len(self.layers)](
+            layer = self.layers[layer_number % len(self.layers)]
+            (hidden_states, input_ids, position_ids, decoder_input) = layer(
                 input_ids=input_ids,
                 position_ids=position_ids,
                 hidden_states=hidden_states,
@@ -428,7 +429,7 @@ def _patch_mtp():
 
             if mhc_multistream is not None:
                 mhc_chunks.append(hidden_states)
-                hidden_states_list.append(self.layers[layer_idx]._postprocess(hidden_states))
+                hidden_states_list.append(layer._postprocess(hidden_states))
             else:
                 # append the output hidden states of the current mtp layer
                 # to the hidden_states_list
