@@ -5,6 +5,7 @@ import warnings
 from contextlib import nullcontext
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.enums import Fp8Recipe
+from megatron.core.extensions.transformer_engine import te_checkpoint
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
