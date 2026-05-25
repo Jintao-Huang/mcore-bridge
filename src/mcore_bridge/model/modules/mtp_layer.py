@@ -18,6 +18,8 @@ from typing import Callable, Optional
 
 from mcore_bridge.utils import roll_tensor
 
+from .transformer_block import _checkpoint_flatten, _checkpoint_unflatten, _TensorIdx
+
 try:
     from megatron.core.typed_torch import apply_module
 except ImportError:
@@ -74,6 +76,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         embedding=None,
         decoder_input=None,
         layer_number: Optional[int] = None,
+        **kwargs,
     ):
         assert context is None, 'multi token prediction + cross attention is not yet supported.'
         if layer_number is None:
@@ -90,10 +93,18 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
         if self.config.position_embedding_type == 'rope' and packed_seq:
             assert position_ids.shape[0] == 1, f'position_ids.shape: {position_ids.shape}'
-            rotary_pos_emb = rotary_pos_emb[position_ids[0]]
+            if isinstance(rotary_pos_emb, dict):
+                for k, v in rotary_pos_emb.items():
+                    rotary_pos_emb[k] = v[position_ids[0]]
+            else:
+                rotary_pos_emb = rotary_pos_emb[position_ids[0]]
         else:
             # mrope or not packed_seq
-            rotary_pos_emb = torch.roll(rotary_pos_emb, shifts=-layer_number, dims=0)
+            if isinstance(rotary_pos_emb, dict):
+                for k, v in rotary_pos_emb.items():
+                    rotary_pos_emb[k] = torch.roll(v, shifts=-layer_number, dims=0)
+            else:
+                rotary_pos_emb = torch.roll(rotary_pos_emb, shifts=-layer_number, dims=0)
         if self.config.recompute_granularity == 'full' and self.training:
             hidden_states = self._checkpointed_forward(
                 hidden_states=hidden_states,
@@ -108,6 +119,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                 inference_params=inference_params,
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
+                **kwargs,
             )
         else:
             hidden_states = self._proj_and_transformer_layer(
@@ -123,6 +135,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                 inference_params=inference_params,
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
+                **kwargs,
             )
         return hidden_states, input_ids, position_ids, decoder_input
 
@@ -141,6 +154,7 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
         inference_params: Optional[InferenceParams] = None,
         packed_seq_params: Optional[PackedSeqParams] = None,
         sequence_len_offset: Optional[torch.Tensor] = None,
+        **kwargs,
     ):
         """Forward through ``_proj_and_transformer_layer`` with activation
         recomputation.
@@ -163,30 +177,31 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
           ``outer_quantization_context`` block below.
         """
 
-        def custom_forward(
-            hidden_states,
-            decoder_input,
-            attention_mask,
-            context,
-            context_mask,
-            rotary_pos_emb,
-            rotary_pos_cos,
-            rotary_pos_sin,
-            sequence_len_offset,
-        ):
+        # Variables that don't require gradients can be captured via closure.
+        _ckpt_attention_mask = attention_mask
+        _ckpt_rotary_pos_emb = rotary_pos_emb
+        extra_kwargs_keys = tuple(kwargs.keys())
+        _extra_flat_tensors = []
+        _extra_schemas = [_checkpoint_flatten(v, _extra_flat_tensors) for v in kwargs.values()]
+
+        def custom_forward(hidden_states, decoder_input, context, context_mask, rotary_pos_cos, rotary_pos_sin,
+                           sequence_len_offset, *extra_flat):
+            rebuilt = [_checkpoint_unflatten(s, extra_flat) for s in _extra_schemas]
+            extra_kwargs = dict(zip(extra_kwargs_keys, rebuilt))
             return self._proj_and_transformer_layer(
                 hidden_states=hidden_states,
                 decoder_input=decoder_input,
-                attention_mask=attention_mask,
+                attention_mask=_ckpt_attention_mask,
                 context=context,
                 context_mask=context_mask,
-                rotary_pos_emb=rotary_pos_emb,
+                rotary_pos_emb=_ckpt_rotary_pos_emb,
                 rotary_pos_cos=rotary_pos_cos,
                 rotary_pos_sin=rotary_pos_sin,
                 attention_bias=attention_bias,
                 inference_params=inference_params,
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
+                **extra_kwargs,
             )
 
         # Decide the outer quantization context, matching
@@ -223,13 +238,12 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                     parallel_state.get_tensor_model_parallel_group(),
                     hidden_states,
                     decoder_input,
-                    attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
                     rotary_pos_cos,
                     rotary_pos_sin,
                     sequence_len_offset,
+                    *_extra_flat_tensors,
                 )
             else:
                 # tensor_parallel.checkpoint stashes args via autograd's
@@ -242,13 +256,12 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                     self.config.distribute_saved_activations,
                     hidden_states,
                     decoder_input,
-                    attention_mask,
                     context,
                     context_mask,
-                    rotary_pos_emb,
                     rotary_pos_cos,
                     rotary_pos_sin,
                     sequence_len_offset,
+                    *_extra_flat_tensors,
                 )
 
         if self.config.recompute_method == 'uniform':
@@ -275,11 +288,88 @@ class MultiTokenPredictionLayer(_MultiTokenPredictionLayer):
                 inference_params=inference_params,
                 packed_seq_params=packed_seq_params,
                 sequence_len_offset=sequence_len_offset,
+                **kwargs,
             )
         else:
             raise ValueError('Invalid activation recompute method.')
 
         return outputs
+
+    def _proj_and_transformer_layer(
+        self,
+        hidden_states: torch.Tensor,
+        decoder_input: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        context: Optional[torch.Tensor] = None,
+        context_mask: Optional[torch.Tensor] = None,
+        rotary_pos_emb: Optional[torch.Tensor] = None,
+        rotary_pos_cos: Optional[torch.Tensor] = None,
+        rotary_pos_sin: Optional[torch.Tensor] = None,
+        attention_bias: Optional[torch.Tensor] = None,
+        inference_params: Optional[InferenceParams] = None,
+        packed_seq_params: Optional[PackedSeqParams] = None,
+        sequence_len_offset: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Concatenates embeddings with hidden states and then applies transformer layer forward.
+        """
+        padding_mask = kwargs.pop('padding_mask', None)
+        if padding_mask is not None:
+            kwargs['padding_mask'] = padding_mask
+        if self.config.sequence_parallel:
+            rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
+        else:
+            rng_context = nullcontext()
+
+        # Unlike transformer_block.py which needs to support mixed-precision in
+        # different layers,currently MTP only use global fp8 context.
+        if self.config.fp8:
+            fp8_context = get_fp8_context(self.config)
+            transformer_layer_fp8_context = get_fp8_context(self.config)
+        else:
+            fp8_context = nullcontext()
+            transformer_layer_fp8_context = nullcontext()
+
+        # TODO: currently ignoring FP4 in MTP layers because we need more numerical validation
+        with rng_context:
+            with fp8_context:
+                hidden_states = self._concat_embeddings(hidden_states, decoder_input)
+
+            # Use a separate fp8 context for the transformer layer. This is to ensure that when the
+            # transformer layer is cudagraphed, the FP8GlobalStateManager.is_first_fp8_module() is
+            # True so that the fp8 weight caching can be triggered correctly.
+            with transformer_layer_fp8_context:
+                if getattr(self, 'mtp_layer_pattern', None) is not None:
+                    hidden_states = self.mtp_model_layer(
+                        hidden_states=hidden_states,
+                        attention_mask=attention_mask,
+                        rotary_pos_emb=rotary_pos_emb,
+                        inference_context=inference_params,
+                        packed_seq_params=packed_seq_params,
+                        **kwargs,
+                    )
+                else:
+                    # GPT path: single TransformerLayer
+                    hidden_states, _ = self.mtp_model_layer(
+                        hidden_states=hidden_states,
+                        attention_mask=attention_mask,
+                        context=context,
+                        context_mask=context_mask,
+                        rotary_pos_emb=rotary_pos_emb,
+                        rotary_pos_cos=rotary_pos_cos,
+                        rotary_pos_sin=rotary_pos_sin,
+                        attention_bias=attention_bias,
+                        inference_params=inference_params,
+                        packed_seq_params=packed_seq_params,
+                        sequence_len_offset=sequence_len_offset,
+                        **kwargs,
+                    )
+
+        if not getattr(self, 'mhc_enabled', False):
+            hidden_states = self._postprocess(hidden_states)
+
+        return hidden_states
 
     def _concat_embeddings(self, hidden_states: torch.Tensor, decoder_input: torch.Tensor):
         """
