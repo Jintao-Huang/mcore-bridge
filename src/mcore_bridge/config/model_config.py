@@ -216,7 +216,6 @@ class ModelConfig(TransformerConfig):
     mhc_sinkhorn_iterations: int = 20
     mhc_init_gating_factor: float = 0.01
     moe_n_hash_layers: int = 0
-    actual_vocab_size: Optional[int] = None
 
     # mtp
     mtp_decoder_input_detach: bool = False
