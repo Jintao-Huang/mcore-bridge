@@ -1836,12 +1836,6 @@ class GPTBridge:
         self._convert_mtp_extra(mtp_layer, hf_state_dict, to_mcore, origin_hf_state_dict)
         transformer_layer = None if mtp_layer is None else mtp_layer.transformer_layer
         # TODO: check
-        if not to_mcore and self.llm_model_type in {'deepseek_v3', 'deepseek_v32', 'glm4_moe', 'glm4_moe_lite'}:
-            self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, 'embed_tokens.weight',
-                                 to_mcore)
-            if self.config.untie_embeddings_and_output_weights:
-                self._set_state_dict(lm_model, 'output_layer.weight', hf_state_dict, 'shared_head.head.weight',
-                                     to_mcore)
         hf_state_dict.update(self._set_layer_attn(transformer_layer, hf_state_dict, -1, to_mcore))
         hf_state_dict.update(self._set_layer_mlp(transformer_layer, hf_state_dict, -1, to_mcore, is_mtp=True))
         if to_mcore:
@@ -1850,6 +1844,14 @@ class GPTBridge:
             hf_state_dict = self._add_prefix(hf_state_dict, hf_prefix)
             hf_state_dict.update(origin_hf_state_dict)
         return hf_state_dict
+
+    def _convert_mtp_embeds(self, lm_model, hf_state_dict, to_mcore):
+        if not to_mcore and self.llm_model_type in {'deepseek_v3', 'deepseek_v32', 'glm4_moe', 'glm4_moe_lite'}:
+            self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, 'embed_tokens.weight',
+                                 to_mcore)
+            if self.config.untie_embeddings_and_output_weights:
+                self._set_state_dict(lm_model, 'output_layer.weight', hf_state_dict, 'shared_head.head.weight',
+                                     to_mcore)
 
     def load_weights(
         self,

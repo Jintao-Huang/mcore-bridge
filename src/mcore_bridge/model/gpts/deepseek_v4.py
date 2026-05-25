@@ -440,6 +440,18 @@ class DeepseekV4Bridge(GPTBridge):
             kwargs['moe_router_enable_expert_bias'] = False
         super()._set_router(mg_mlp, hf_state_dict, to_mcore, **kwargs)
 
+    def _convert_mtp_extra(self, mtp_layer, hf_state_dict, to_mcore, origin_hf_state_dict):
+        for key in ['enorm.weight', 'hnorm.weight', 'e_proj.weight', 'h_proj.weight']:
+            self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
+        self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, 'norm.weight', to_mcore)
+
+    def _convert_mtp_embeds(self, lm_model, hf_state_dict, to_mcore):
+        if not to_mcore:
+            self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, 'emb.tok_emb.weight',
+                                 to_mcore)
+            if self.config.untie_embeddings_and_output_weights:
+                self._set_state_dict(lm_model, 'output_layer.weight', hf_state_dict, 'head.weight', to_mcore)
+
 
 register_model(
     ModelMeta(
