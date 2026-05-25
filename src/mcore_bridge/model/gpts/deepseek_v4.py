@@ -4,7 +4,6 @@ import torch
 from megatron.core import tensor_parallel
 from megatron.core.models.common.embeddings import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
-from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from typing import Optional
 
 from mcore_bridge.bridge import GPTBridge
@@ -329,7 +328,6 @@ class DeepseekV4GPTModel(GPTModel):
 
 class DeepseekV4Loader(ModelLoader):
     model_cls = DeepseekV4GPTModel
-    transformer_block = McoreTransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import \

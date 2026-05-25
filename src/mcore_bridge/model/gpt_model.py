@@ -324,6 +324,7 @@ class GPTModel(McoreGPTModel):
             hidden_states = decoder_output
 
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
+        extra_block_kwargs.pop('input_ids', None)
         return self._postprocess(
             hidden_states=hidden_states,
             input_ids=input_ids,

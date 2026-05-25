@@ -18,6 +18,11 @@ try:
 except ImportError:
     apply_module = None
 
+try:
+    from megatron.core.transformer.hyper_connection import HyperConnectionModule, learned_output_contract
+except ImportError:
+    pass
+
 
 class _TensorIdx:
     """Sentinel that marks a position in the flatten schema as a tensor index."""
@@ -352,6 +357,12 @@ class TransformerBlock(McoreTransformerBlock):
         #   already creates viewless tensors. That said, make_viewless_tensor()
         #   is called here to be future-proof and corner-case-proof.
         hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
+        enable_hyper_connections = getattr(self.config, 'enable_hyper_connections', False)
+        # Expand hidden states for hyper connections at the start of the block
+        # Only expand at the first PP stage; subsequent stages receive n-stream from previous stage
+        if enable_hyper_connections and self.pre_process:
+            hidden_states = HyperConnectionModule.input_expand(hidden_states,
+                                                               self.num_residual_streams)  # [s, b, C] -> [s, b, n*C]
 
         if self.config.sequence_parallel:
             rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
@@ -379,6 +390,16 @@ class TransformerBlock(McoreTransformerBlock):
             use_inner_quantization_context = False
             outer_quantization_context = nullcontext()
 
+        # Determine if MHC recompute should be used
+        # Only enable when: training mode AND hyper connections AND 'mhc' in recompute_modules
+        use_mhc_recompute = (
+            self.training and enable_hyper_connections and self.config.recompute_granularity == 'selective'
+            and 'mhc' in self.config.recompute_modules)
+        if hasattr(self, '_build_mhc_recompute_layer_plan'):
+            mhc_layer_managers, mhc_is_last_in_recompute_block = self._build_mhc_recompute_layer_plan(use_mhc_recompute)
+        else:
+            mhc_layer_managers = [None] * len(self.layers)
+            mhc_is_last_in_recompute_block = [False] * len(self.layers)
         with rng_context, outer_quantization_context:
             # Forward pass.
             if self.config.recompute_granularity == 'full' and self.training:
@@ -416,6 +437,10 @@ class TransformerBlock(McoreTransformerBlock):
                     else:
                         inner_quantization_context = nullcontext()
 
+                    mhc_manager = mhc_layer_managers[l_no]
+                    if mhc_manager is not None:
+                        mhc_manager.is_last_layer_in_recompute_block = (mhc_is_last_in_recompute_block[l_no])
+                        kwargs['mhc_recompute_manager'] = mhc_manager
                     with self.offload_context, inner_quantization_context:
                         hidden_states, context = self._layer_forward(
                             layer,
@@ -433,6 +458,12 @@ class TransformerBlock(McoreTransformerBlock):
                             sequence_len_offset=sequence_len_offset,
                             padding_mask=padding_mask,
                             **kwargs)
+                    if mhc_manager is not None:
+                        self._finalize_mhc_recompute_layer(
+                            mhc_manager=mhc_manager,
+                            hidden_states=hidden_states,
+                            is_last_in_recompute_block=mhc_is_last_in_recompute_block[l_no],
+                        )
 
                     if (torch.is_grad_enabled() and self.config.cpu_offloading
                             and self.group_prefetch_offload_commit_async is not None):
@@ -441,6 +472,24 @@ class TransformerBlock(McoreTransformerBlock):
                     # Extract intermediate embeddings using global layer index
                     if (l_no + layer_offset) in extract_layer_indices:
                         intermediate_hidden_states.append(hidden_states)
+
+        # Only contract if the final layer norm is in this stage
+        mhc_multistream = None
+        if enable_hyper_connections and self.has_final_layernorm_in_this_stage():
+            # When MTP is enabled, save pre-contraction multi-stream for MTP input.
+            if self.config.mtp_num_layers is not None:
+                assert (len(extract_layer_indices) == 0), 'Feature extraction is not supported with mHC + MTP.'
+                mhc_multistream = hidden_states
+            # DSv4 introduced the new output contraction for mHC.
+            # [s, b, n*C] -> [s, b, C]
+            hidden_states = learned_output_contract(
+                hidden_states,
+                self.hc_head_fn,
+                self.hc_head_base,
+                self.hc_head_scale,
+                self.config.num_residual_streams,
+                self.config.layernorm_epsilon,
+            )
 
         # Final layer norm.
         if self.final_layernorm is not None:
@@ -460,5 +509,10 @@ class TransformerBlock(McoreTransformerBlock):
 
         if len(extract_layer_indices) > 0:
             return hidden_states, intermediate_hidden_states
+
+        # When mHC + MTP, return both contracted [s,b,h] (for lm_head) and
+        # pre-contraction multi-stream [s,b,n*h] (for MTP input).
+        if mhc_multistream is not None:
+            return hidden_states, mhc_multistream
 
         return hidden_states

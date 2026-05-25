@@ -402,7 +402,7 @@ def _patch_mtp():
         # get hidden states from previous mtp stages
         get_offset_kwargs = {} if self.vp_stage is None else {'vp_stage': self.vp_stage}
         mtp_decoder_input = decoder_input = kwargs.pop('decoder_input', None)
-        mhc_multistream = kwargs.get('mhc_multistream', None)
+        mhc_multistream = kwargs.pop('mhc_multistream', None)
 
         offset = get_mtp_layer_offset(self.config, **get_offset_kwargs)
         assert offset == 0, 'not support offset'
