@@ -54,6 +54,7 @@ class TransformerLayer(McoreTransformerLayer):
         is_mtp_layer: bool = False,
         add_layer_offset: bool = True,
         pp_layer_offset: Optional[int] = None,
+        **kwargs,
     ):
         self.submodules_config = submodules
         super(McoreTransformerLayer, self).__init__(config=config, vp_stage=vp_stage)

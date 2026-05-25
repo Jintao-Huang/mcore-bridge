@@ -145,11 +145,16 @@ class ModelLoader:
             if self_attention.module is McoreMLASelfAttention:
                 self_attention.module = MLASelfAttention
 
-    def _replace_router(self, transformer_layer_spec):
+    def _replace_router(self, transformer_layer_spec, mlp_key='mlp'):
         for layer_spec in transformer_layer_spec.layer_specs:
-            mlp_submodules = layer_spec.submodules.mlp.submodules
-            if getattr(mlp_submodules, 'router', None) is McoreTopKRouter:
-                mlp_submodules.router = TopKRouter
+            mlp_spec = getattr(layer_spec.submodules, mlp_key, None)
+            if mlp_spec is not None:
+                if isinstance(mlp_spec, partial):
+                    mlp_submodules = mlp_spec.keywords['submodules']
+                else:
+                    mlp_submodules = mlp_spec.submodules
+                if getattr(mlp_submodules, 'router', None) is McoreTopKRouter:
+                    mlp_submodules.router = TopKRouter
 
     def build_model(
         self,
