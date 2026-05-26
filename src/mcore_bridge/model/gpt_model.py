@@ -196,7 +196,7 @@ class GPTModel(McoreGPTModel):
         if in_inference_mode and not has_config_logger_enabled(self.config):
             decoder_input = WrappedTensor(decoder_input)
 
-        return (decoder_input, mtp_decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
+        return decoder_input, mtp_decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset
 
     def _set_inv_freq(self):
         new_inv_freq, self.config.attention_scaling = get_rope_inv_freq(self.config)
@@ -342,25 +342,24 @@ class GPTModel(McoreGPTModel):
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         return self.output_layer(hidden_states, *args, **kwargs)[0]
 
-    def _postprocess(
-        self,
-        hidden_states,
-        input_ids,
-        position_ids,
-        labels,
-        rotary_pos_emb,
-        rotary_pos_cos,
-        rotary_pos_sin,
-        loss_mask=None,
-        decoder_input=None,
-        attention_mask=None,
-        inference_params=None,
-        packed_seq_params=None,
-        sequence_len_offset=None,
-        runtime_gather_output=None,
-        extra_block_kwargs=None,
-        inference_context=None,
-    ):
+    def _postprocess(self,
+                     hidden_states,
+                     input_ids,
+                     position_ids,
+                     labels,
+                     rotary_pos_emb,
+                     rotary_pos_cos,
+                     rotary_pos_sin,
+                     loss_mask=None,
+                     decoder_input=None,
+                     attention_mask=None,
+                     inference_params=None,
+                     packed_seq_params=None,
+                     sequence_len_offset=None,
+                     runtime_gather_output=None,
+                     extra_block_kwargs=None,
+                     inference_context=None,
+                     **kwargs):
         """Postprocesses decoder hidden states to generate logits or compute loss.
 
         Applies Multi-Token Prediction if enabled, generates output logits through
