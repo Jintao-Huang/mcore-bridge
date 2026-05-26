@@ -168,6 +168,13 @@ class GPTModel(McoreGPTModel):
         if decoder_input is not None and self.training and torch.is_grad_enabled() and not decoder_input.requires_grad:
             # fix LoRA incompatibility with gradient checkpointing
             decoder_input = decoder_input.requires_grad_(True)
+
+        mtp_decoder_input = decoder_input
+        if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:
+            input_tensor = self.get_input_tensor()
+            input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
+            self.set_input_tensor(input_tensor)
+
         rotary_pos_emb, rotary_pos_cos, rotary_pos_sin = self._get_rotary_pos_emb(
             decoder_input, position_ids, packed_seq_params=packed_seq_params)
 
@@ -189,7 +196,7 @@ class GPTModel(McoreGPTModel):
         if in_inference_mode and not has_config_logger_enabled(self.config):
             decoder_input = WrappedTensor(decoder_input)
 
-        return (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset)
+        return decoder_input, mtp_decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset
 
     def _set_inv_freq(self):
         new_inv_freq, self.config.attention_scaling = get_rope_inv_freq(self.config)
@@ -261,8 +268,9 @@ class GPTModel(McoreGPTModel):
         if self.config.position_embedding_type == 'mrope' and position_ids.ndim == 2:  # qwen3_asr
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
         inference_context = deprecate_inference_params(inference_context, inference_params)
+
         # There is a difference in whether rotary_pos_emb can be fused between the decoder and MTP.
-        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
+        decoder_input, mtp_decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = (
             self._preprocess(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -280,11 +288,6 @@ class GPTModel(McoreGPTModel):
             else:
                 decoder_rotary_pos_emb = rotary_pos_emb[position_ids[0]]
 
-        mtp_decoder_input = decoder_input
-        if self.config.is_multimodal and self.config.mtp_num_layers and decoder_input is None:
-            input_tensor = self.get_input_tensor()
-            input_tensor, mtp_decoder_input = input_tensor.chunk(2, dim=0)
-            self.set_input_tensor(input_tensor)
         extra_block_kwargs = extra_block_kwargs or {}
         full_attention_mask = attention_mask
         if isinstance(full_attention_mask, dict):
@@ -347,25 +350,24 @@ class GPTModel(McoreGPTModel):
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         return self.output_layer(hidden_states, *args, **kwargs)[0]
 
-    def _postprocess(
-        self,
-        hidden_states,
-        input_ids,
-        position_ids,
-        labels,
-        rotary_pos_emb,
-        rotary_pos_cos,
-        rotary_pos_sin,
-        loss_mask=None,
-        decoder_input=None,
-        attention_mask=None,
-        inference_params=None,
-        packed_seq_params=None,
-        sequence_len_offset=None,
-        runtime_gather_output=None,
-        extra_block_kwargs=None,
-        inference_context=None,
-    ):
+    def _postprocess(self,
+                     hidden_states,
+                     input_ids,
+                     position_ids,
+                     labels,
+                     rotary_pos_emb,
+                     rotary_pos_cos,
+                     rotary_pos_sin,
+                     loss_mask=None,
+                     decoder_input=None,
+                     attention_mask=None,
+                     inference_params=None,
+                     packed_seq_params=None,
+                     sequence_len_offset=None,
+                     runtime_gather_output=None,
+                     extra_block_kwargs=None,
+                     inference_context=None,
+                     **kwargs):
         """Postprocesses decoder hidden states to generate logits or compute loss.
 
         Applies Multi-Token Prediction if enabled, generates output logits through
