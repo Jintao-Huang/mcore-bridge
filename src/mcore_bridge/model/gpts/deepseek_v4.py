@@ -353,8 +353,20 @@ class DeepseekV4Bridge(GPTBridge):
         res = super()._convert_hf_state_dict(hf_state_dict, to_mcore)
         if to_mcore:
             res = self._add_prefix(res, 'model.')
+            new_res = {}
+            for k, v in res.items():
+                if k.endswith('.scale'):
+                    k = k[:-len('.scale')] + '.weight_scale_inv'
+                new_res[k] = v
+            res = new_res
         elif not to_mcore:
             res = self._remove_prefix(res, 'model.')
+            new_res = {}
+            for k, v in res.items():
+                if k.endswith('.weight_scale_inv'):
+                    k = k[:-len('.weight_scale_inv')] + '.scale'
+                new_res[k] = v
+            res = new_res
         return res
 
     def _set_moe_state(

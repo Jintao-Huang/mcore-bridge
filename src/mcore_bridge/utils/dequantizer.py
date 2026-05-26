@@ -53,3 +53,21 @@ class MxFp4Dequantizer:
     ) -> torch.Tensor:
         from transformers.integrations import convert_moe_packed_tensors
         return convert_moe_packed_tensors(blocks, scales)
+
+
+_FP4_E2M1_LUT = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
+
+
+def fp4_to_fp8(packed: torch.Tensor) -> torch.Tensor:
+    lut = torch.tensor(_FP4_E2M1_LUT, dtype=torch.float32, device=packed.device)
+    u8 = packed.contiguous().view(torch.uint8)
+    low = (u8 & 0x0F).long()
+    high = ((u8 >> 4) & 0x0F).long()
+
+    low_f32 = lut[low]
+    high_f32 = lut[high]
+
+    unpacked = torch.stack([low_f32, high_f32], dim=-1)
+    unpacked = unpacked.reshape(*packed.shape[:-1], 2 * packed.shape[-1])
+
+    return unpacked.to(torch.float8_e4m3fn)

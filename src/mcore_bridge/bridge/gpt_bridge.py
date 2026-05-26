@@ -16,7 +16,7 @@ from typing import Callable, List, Optional, Union
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.tuners import LoraParallelLinear
 from mcore_bridge.utils import (MxFp4Dequantizer, SafetensorLazyLoader, StreamingSafetensorSaver, deep_getattr,
-                                gc_collect, get_logger, is_master, unwrap_model)
+                                fp4_to_fp8, gc_collect, get_logger, is_master, unwrap_model)
 
 logger = get_logger()
 
@@ -48,6 +48,7 @@ class GPTBridge:
     additional_dim0_keys = set()
     additional_dim1_keys = set()
     _support_hf_grouped_lora = True
+    _check_fp4 = False
 
     def __init__(self, config: ModelConfig):
         self.config = config
