@@ -16,7 +16,7 @@ from typing import Callable, List, Optional, Union
 from mcore_bridge.config import ModelConfig
 from mcore_bridge.tuners import LoraParallelLinear
 from mcore_bridge.utils import (MxFp4Dequantizer, SafetensorLazyLoader, StreamingSafetensorSaver, deep_getattr,
-                                fp4_to_fp8, gc_collect, get_logger, is_master, unwrap_model)
+                                gc_collect, get_logger, is_master, unwrap_model)
 
 logger = get_logger()
 
