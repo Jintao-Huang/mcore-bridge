@@ -401,13 +401,21 @@ def _patch_mtp():
                 attention_mask: torch.Tensor, **kwargs) -> torch.Tensor:
         # get hidden states from previous mtp stages
         get_offset_kwargs = {} if self.vp_stage is None else {'vp_stage': self.vp_stage}
+        mtp_decoder_input = decoder_input = kwargs.pop('decoder_input', None)
+        mhc_multistream = kwargs.pop('mhc_multistream', None)
+
         offset = get_mtp_layer_offset(self.config, **get_offset_kwargs)
         assert offset == 0, 'not support offset'
         hidden_states_list = list(torch.chunk(hidden_states, 1 + offset, dim=0))
-        hidden_states = hidden_states_list[offset]
-        mtp_decoder_input = decoder_input = kwargs.pop('decoder_input', None)
+        if mhc_multistream is not None:
+            # mHC mode: use multi-stream for MTP depth input, contracted for loss list.
+            mhc_chunks = list(torch.chunk(mhc_multistream, 1 + offset, dim=0))
+            hidden_states = mhc_chunks[offset]
+        else:
+            hidden_states = hidden_states_list[offset]
         for layer_number in range(self.config.mtp_unroll_steps):
-            (hidden_states, input_ids, position_ids, decoder_input) = self.layers[layer_number % len(self.layers)](
+            layer = self.layers[layer_number % len(self.layers)]
+            (hidden_states, input_ids, position_ids, decoder_input) = layer(
                 input_ids=input_ids,
                 position_ids=position_ids,
                 hidden_states=hidden_states,
@@ -419,9 +427,13 @@ def _patch_mtp():
             if mtp_decoder_input is None:
                 decoder_input = None
 
-            # append the output hidden states of the current mtp layer
-            # to the hidden_states_list
-            hidden_states_list.append(hidden_states)
+            if mhc_multistream is not None:
+                mhc_chunks.append(hidden_states)
+                hidden_states_list.append(layer._postprocess(hidden_states))
+            else:
+                # append the output hidden states of the current mtp layer
+                # to the hidden_states_list
+                hidden_states_list.append(hidden_states)
 
         # concat the hidden states of all mtp layers
         hidden_states = torch.cat(hidden_states_list, dim=0)

@@ -4,7 +4,6 @@ import torch
 from megatron.core import tensor_parallel
 from megatron.core.models.common.embeddings import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
-from megatron.core.transformer.transformer_block import TransformerBlock as McoreTransformerBlock
 from typing import Optional
 
 from mcore_bridge.bridge import GPTBridge
@@ -329,7 +328,6 @@ class DeepseekV4GPTModel(GPTModel):
 
 class DeepseekV4Loader(ModelLoader):
     model_cls = DeepseekV4GPTModel
-    transformer_block = McoreTransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         from megatron.core.models.gpt.experimental_attention_variant_module_specs import \
@@ -439,6 +437,20 @@ class DeepseekV4Bridge(GPTBridge):
             self._set_state_dict(mg_mlp, 'router.tid2eid', hf_state_dict, 'gate.tid2eid', to_mcore)
             kwargs['moe_router_enable_expert_bias'] = False
         super()._set_router(mg_mlp, hf_state_dict, to_mcore, **kwargs)
+
+    def _convert_mtp_extra(self, mtp_layer, hf_state_dict, to_mcore, origin_hf_state_dict):
+        for key in ['enorm.weight', 'hnorm.weight', 'e_proj.weight', 'h_proj.weight']:
+            self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
+        self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, 'norm.weight', to_mcore)
+        for key in ['hc_head_base', 'hc_head_fn', 'hc_head_scale']:
+            self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
+
+    def _convert_mtp_embeds(self, lm_model, hf_state_dict, to_mcore):
+        if not to_mcore:
+            self._set_state_dict(lm_model, 'embedding.word_embeddings.weight', hf_state_dict, 'emb.tok_emb.weight',
+                                 to_mcore)
+            if self.config.untie_embeddings_and_output_weights:
+                self._set_state_dict(lm_model, 'output_layer.weight', hf_state_dict, 'head.weight', to_mcore)
 
 
 register_model(

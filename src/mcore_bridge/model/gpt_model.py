@@ -307,7 +307,7 @@ class GPTModel(McoreGPTModel):
             extra_block_kwargs['input_ids'] = input_ids
 
         # Run decoder.
-        hidden_states = self.decoder(
+        decoder_output = self.decoder(
             hidden_states=decoder_input,
             attention_mask=attention_mask,
             inference_context=inference_context,
@@ -319,7 +319,15 @@ class GPTModel(McoreGPTModel):
             **extra_block_kwargs,
         )
 
+        # When mHC + MTP, the decoder returns (contracted, multi-stream).
+        # MTP needs multi-stream; lm_head needs contracted.
+        if isinstance(decoder_output, tuple):
+            hidden_states, extra_block_kwargs['mhc_multistream'] = decoder_output
+        else:
+            hidden_states = decoder_output
+
         # MTP: https://github.com/NVIDIA/Megatron-LM/issues/1661
+        extra_block_kwargs.pop('input_ids', None)
         return self._postprocess(
             hidden_states=hidden_states,
             input_ids=input_ids,
