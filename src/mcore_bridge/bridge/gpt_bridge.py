@@ -199,23 +199,26 @@ class GPTBridge:
             tensor = tensor + offset
         tensor_list = tensor.chunk(len(mg_param), dim=0)
         for i, param in enumerate(mg_param):
-            tensor = tensor_list[i].reshape(*param.shape)
-            if self._is_fp8_param(param):
-                if hf_scale_inv is None:
-                    param.data.copy_(tensor)
-                    param._high_precision_init_val.copy_(tensor)
-                else:
-                    tensor = tensor.view(torch.uint8)
-                    param._rowwise_data.data.copy_(tensor)
-                    self._copy_scale_inv(param, hf_scale_inv[i])
-                    del param.get_high_precision_init_val
-            else:
-                if hf_scale_inv is not None:
-                    fp8_tensor = self.fp8_quantizer.make_empty(tensor.shape)
-                    fp8_tensor._rowwise_data.copy_(tensor.view(torch.uint8))
-                    self._copy_scale_inv(fp8_tensor, hf_scale_inv[i])
-                    tensor = fp8_tensor
+            self._set_param(param, tensor_list[i], None if hf_scale_inv is None else hf_scale_inv[i])
+
+    def _set_param(self, param, tensor, hf_scale_inv):
+        tensor = tensor.reshape(*param.shape)
+        if self._is_fp8_param(param):
+            if hf_scale_inv is None:
                 param.data.copy_(tensor)
+                param._high_precision_init_val.copy_(tensor)
+            else:
+                tensor = tensor.view(torch.uint8)
+                param._rowwise_data.data.copy_(tensor)
+                self._copy_scale_inv(param, hf_scale_inv)
+                del param.get_high_precision_init_val
+        else:
+            if hf_scale_inv is not None:
+                fp8_tensor = self.fp8_quantizer.make_empty(tensor.shape)
+                fp8_tensor._rowwise_data.copy_(tensor.view(torch.uint8))
+                self._copy_scale_inv(fp8_tensor, hf_scale_inv)
+                tensor = fp8_tensor
+            param.data.copy_(tensor)
 
     @staticmethod
     def _copy_scale_inv(tensor, scale_inv):
