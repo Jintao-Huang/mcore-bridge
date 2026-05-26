@@ -5,7 +5,8 @@ from typing import Tuple
 
 class Fp8Dequantizer:
 
-    def __init__(self, block_size: Tuple[int, int] = (128, 128)):
+    def __init__(self, block_size: Tuple[int, int] = (None, None)):
+        # Set to None to enable automatic selection.
         self.block_size = block_size
 
     def convert(
@@ -19,8 +20,13 @@ class Fp8Dequantizer:
             quantized = quantized.view(torch.float8_e4m3fn)
         quantized_fp32 = quantized.to(torch.float32)
         rows, cols = quantized_fp32.shape[-2:]
+        scale_rows, scale_cols = scales.shape[-2:]
         block_size = self.block_size
         block_m, block_n = block_size
+        if block_m is None:
+            block_m = rows // scale_rows
+        if block_n is None:
+            block_n = cols // scale_cols
         needs_padding = rows % block_m != 0 or cols % block_n != 0
 
         input_tensor = quantized_fp32
