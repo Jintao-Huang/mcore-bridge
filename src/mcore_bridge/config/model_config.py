@@ -201,7 +201,7 @@ class ModelConfig(TransformerConfig):
     dsa_indexer_n_heads: Optional[int] = None
     dsa_indexer_head_dim: Optional[int] = None
     dsa_indexer_topk: Optional[int] = None
-    dsa_indexer_loss_coeff: Optional[float] = None
+    dsa_indexer_loss_coeff: float = 0.
     dsa_indexer_use_sparse_loss: bool = False
     dsa_indexer_rotary_interleaved: bool = False
 
