@@ -19,7 +19,7 @@ from typing import Callable, Optional
 
 from mcore_bridge.utils import roll_tensor
 
-from .transformer_block import _checkpoint_flatten, _checkpoint_unflatten, _TensorIdx
+from .transformer_block import _checkpoint_flatten, _checkpoint_unflatten
 
 try:
     from megatron.core.typed_torch import apply_module
