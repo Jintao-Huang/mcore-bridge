@@ -31,6 +31,7 @@ class GPTBridge:
     hf_mtp_prefix = 'model.layers'
     hf_embed_key = 'model.embed_tokens.weight'
     hf_final_layernorm_key = 'model.norm.weight'
+    hf_mtp_final_layernorm_key = 'shared_head.norm.weight'
     hf_lm_head_key = 'lm_head.weight'
     hf_score_key = 'score.weight'
     hf_state_dict_mapping = {}
@@ -1816,7 +1817,8 @@ class GPTBridge:
         for key in ['enorm.weight', 'hnorm.weight', 'eh_proj.weight']:
             self._set_state_dict(mtp_layer, key, hf_state_dict, key, to_mcore)
         self._fp8_skip_modules.update({'eh_proj'})
-        self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, 'shared_head.norm.weight', to_mcore)
+        self._set_state_dict(mtp_layer, 'final_layernorm.weight', hf_state_dict, self.hf_mtp_final_layernorm_key,
+                             to_mcore)
 
     def _convert_mtp_layer(self, lm_model, hf_state_dict, hf_prefix: str, layer_idx: int, to_mcore: bool):
         mtp_layer = lm_model.mtp.layers[layer_idx] if hasattr(lm_model, 'mtp') else None

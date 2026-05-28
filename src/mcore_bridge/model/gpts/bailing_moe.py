@@ -16,6 +16,7 @@ class BailingMoeBridge(GPTBridge):
     hf_k_norm_key = 'key_layernorm.weight'
     hf_expert_bias_key = 'gate.expert_bias'
     hf_o_proj_key = 'dense'
+    hf_mtp_final_layernorm_key = 'final_layernorm.weight'
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
         config = self.config
@@ -65,11 +66,10 @@ class BailingMoeBridge(GPTBridge):
                     head_dim_block = head_dim // self.fp8_block_size
                     qkv_scale_inv = hf_state_dict['query_key_value.weight_scale_inv'].load()
                     qkv_scale_inv = hf_to_mg(qkv_scale_inv, head_dim_block, hidden_size_block)
-                self._set_weight(
-                    mg_attn.linear_qkv.weight, qkv, 'linear_qkv.weight', hf_scale_inv=qkv_scale_inv)
+                self._set_weight(mg_attn.linear_qkv.weight, qkv, 'linear_qkv.weight', hf_scale_inv=qkv_scale_inv)
         else:
-            is_lora = False if mg_attn is None else (
-                isinstance(mg_attn.linear_qkv, LoraParallelLinear) and self._peft_format)
+            is_lora = False if mg_attn is None else (isinstance(mg_attn.linear_qkv, LoraParallelLinear)
+                                                     and self._peft_format)
             is_lora = torch.tensor([is_lora], dtype=torch.bool, device='cuda')
             if self.pp_size > 1:
                 dist.all_reduce(is_lora, group=self.pp_group)
@@ -85,24 +85,23 @@ class BailingMoeBridge(GPTBridge):
                     hf_state_dict['query_key_value.lora_A.weight'] = lora_A.clone()
                     hf_state_dict['query_key_value.lora_B.weight'] = mg_to_hf(lora_B, head_dim, lora_B.shape[-1])
             elif not self._peft_format:
-                mg_w, scale_inv = self._get_weight(
-                    None if mg_attn is None else mg_attn.linear_qkv.weight.data, 'linear_qkv.weight')
+                mg_w, scale_inv = self._get_weight(None if mg_attn is None else mg_attn.linear_qkv.weight.data,
+                                                   'linear_qkv.weight')
                 if mg_w is not None:
                     hf_state_dict['query_key_value.weight'] = mg_to_hf(mg_w, head_dim, hidden_size)
                 if scale_inv is not None:
                     assert head_dim % self.fp8_block_size == 0, (
                         f'head_dim ({head_dim}) must be divisible by fp8_block_size ({self.fp8_block_size})')
                     head_dim_block = head_dim // self.fp8_block_size
-                    hf_state_dict['query_key_value.weight_scale_inv'] = mg_to_hf(
-                        scale_inv, head_dim_block, hidden_size_block)
+                    hf_state_dict['query_key_value.weight_scale_inv'] = mg_to_hf(scale_inv, head_dim_block,
+                                                                                 hidden_size_block)
                 del mg_w
         assert not self.config.add_bias_linear
         return hf_state_dict
 
 
-register_model(
-    ModelMeta(
-        ModelType.bailing_moe,
-        ['bailing_moe'],
-        bridge_cls=BailingMoeBridge,
-    ))
+register_model(ModelMeta(
+    ModelType.bailing_moe,
+    ['bailing_moe'],
+    bridge_cls=BailingMoeBridge,
+))
