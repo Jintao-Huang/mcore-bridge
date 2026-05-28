@@ -1,6 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import megatron.core
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from megatron.core import mpu
@@ -113,6 +114,10 @@ class ModelLoader:
         finally:
             self.config.experimental_attention_variant = experimental_attention_variant
 
+    def _deepcopy_layer_spec(self, transformer_layer_spec):
+        for i, layer_spec in enumerate(transformer_layer_spec.layer_specs):
+            transformer_layer_spec.layer_specs[i] = deepcopy(layer_spec)
+
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         with self._patch_experimental_attention_variant():
             transformer_layer_spec = get_gpt_decoder_block_spec(
@@ -121,6 +126,7 @@ class ModelLoader:
                 normalization=self.config.normalization,
                 qk_l2_norm=self.config.qk_l2_norm,
                 vp_stage=vp_stage)
+            self._deepcopy_layer_spec(transformer_layer_spec)
         if self.config.experimental_attention_variant == 'dsa':
             for layer_spec in transformer_layer_spec.layer_specs:
                 self._replace_spec_dsa(layer_spec)
