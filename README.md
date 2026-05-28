@@ -131,7 +131,7 @@ The following is the list of models supported by MCore-Bridge:
 | GLM      | glm4, glm4_moe, glm4_moe_lite<br />glm_moe_dsa |
 | MiniMax  | minimax_m2                                                   |
 | Kimi     | kimi_k2, kimi_k25                                   |
-| Bailing  | bailing_moe                                                  |
+| Bailing  | bailing_moe, bailing_hybrid                             |
 | InternLM | internlm3                           |
 | Llama    | llama                                                |
 | GPT-OSS  | gpt_oss                                                      |
