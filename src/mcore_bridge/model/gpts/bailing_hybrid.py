@@ -7,6 +7,7 @@ from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_e
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.tensor_parallel.mappings import (gather_from_tensor_model_parallel_region,
                                                     scatter_to_tensor_model_parallel_region)
+from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 from torch import Tensor, nn
@@ -14,7 +15,7 @@ from typing import Optional, Tuple
 
 from ..constant import ModelType
 from ..register import ModelLoader, ModelMeta, register_model
-from .bailing_moe import BailingMoeBridge, BailingMoeSelfAttention
+from .bailing_moe import BailingMoeBridge
 
 try:
     from fla.ops.simple_gla.fused_recurrent import fused_recurrent_simple_gla
@@ -64,7 +65,7 @@ class BailingMoeV2_5GroupRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype).view(input_shape)
 
 
-class LinearAttention(BailingMoeSelfAttention):
+class LinearAttention(SelfAttention):
 
     def __init__(self, config: TransformerConfig, *args, **kwargs):
         if fused_recurrent_simple_gla is None:

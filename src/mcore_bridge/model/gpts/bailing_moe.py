@@ -1,66 +1,10 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import torch
-from megatron.core.transformer.attention import SelfAttention
-from torch import Tensor
-from typing import Optional
 
 from mcore_bridge.bridge import GPTBridge
 
 from ..constant import ModelType
-from ..register import ModelLoader, ModelMeta, register_model
-
-
-class BailingMoeSelfAttention(SelfAttention):
-
-    def get_query_key_value_tensors(
-        self,
-        hidden_states: Tensor,
-        key_value_states: Optional[Tensor] = None,
-        *args,
-        **kwargs,
-    ):
-        """Override to handle BailingMoE's non-interleaved QKV weight layout.
-
-        BailingMoE stores weights as [Q_all | K_all | V_all] (split by head count),
-        not Megatron's interleaved [q1 q2 k1 v1 | q3 q4 k2 v2 | ...].
-        """
-        # [sq, b, h] --> [sq, b, (num_heads + 2 * num_kv_heads) * head_dim]
-        mixed_qkv, _ = self.linear_qkv(hidden_states)
-
-        # [sq, b, (num_heads + 2 * num_kv_heads) * head_dim]
-        # --> [sq, b, num_heads + 2 * num_kv_heads, head_dim]
-        new_tensor_shape = mixed_qkv.size()[:-1] + (
-            self.num_attention_heads_per_partition + 2 * self.num_query_groups_per_partition,
-            self.hidden_size_per_attention_head,
-        )
-        mixed_qkv = mixed_qkv.view(*new_tensor_shape)
-
-        # Split by head count: [sq, b, num_heads, hn], [sq, b, num_kv_heads, hn], [sq, b, num_kv_heads, hn]
-        query, key, value = torch.split(
-            mixed_qkv,
-            [
-                self.num_attention_heads_per_partition, self.num_query_groups_per_partition,
-                self.num_query_groups_per_partition
-            ],
-            dim=2,
-        )
-
-        if self.q_layernorm is not None:
-            query = self.q_layernorm(query)
-
-        if self.k_layernorm is not None:
-            key = self.k_layernorm(key)
-
-        return query, key, value
-
-
-class BailingMoeLoader(ModelLoader):
-
-    def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
-        transformer_layer_spec = super().get_transformer_layer_spec(vp_stage)
-        for layer_spec in transformer_layer_spec.layer_specs:
-            layer_spec.submodules.self_attention.module = BailingMoeSelfAttention
-        return transformer_layer_spec
+from ..register import ModelMeta, register_model
 
 
 class BailingMoeBridge(GPTBridge):
@@ -73,16 +17,33 @@ class BailingMoeBridge(GPTBridge):
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
         config = self.config
-        assert config.num_query_groups == config.num_attention_heads
+        num_heads = config.num_attention_heads
+        num_query_groups = config.num_query_groups if config.num_query_groups is not None else num_heads
+        assert num_heads % num_query_groups == 0, (
+            f'num_attention_heads ({num_heads}) must be divisible by num_query_groups ({num_query_groups})')
+        q_per_group = num_heads // num_query_groups
+        head_dim = config.kv_channels
+        hidden_size = config.hidden_size
+        total_q = num_heads * head_dim
+        total_kv = num_query_groups * head_dim
         if to_mcore:
+            # HF: [Q_all (N*hd) | K_all (G*hd) | V_all (G*hd)]
+            # -> Megatron grouped interleaved: [(q_chunk, k, v) per KV group]
             qkv = hf_state_dict['query_key_value.weight'].load()
-            qkv = qkv.reshape(3, -1, config.hidden_size).transpose(0, 1).reshape(-1, config.hidden_size)
+            q = qkv[:total_q].reshape(num_query_groups, q_per_group, head_dim, hidden_size)
+            k = qkv[total_q:total_q + total_kv].reshape(num_query_groups, 1, head_dim, hidden_size)
+            v = qkv[total_q + total_kv:].reshape(num_query_groups, 1, head_dim, hidden_size)
+            qkv = torch.cat([q, k, v], dim=1).reshape(-1, hidden_size)
             self._set_weight(mg_attn.linear_qkv.weight, qkv, 'linear_qkv.weight', hf_scale_inv=None)
         else:
+            # Megatron grouped interleaved -> HF: [Q_all | K_all | V_all]
             qkv = self._get_weight(None if mg_attn is None else mg_attn.linear_qkv.weight.data, 'linear_qkv.weight')[0]
             if qkv is not None:
-                qkv = qkv.reshape(-1, 3, config.hidden_size).transpose(0, 1).reshape(-1, config.hidden_size)
-                hf_state_dict['query_key_value.weight'] = qkv
+                qkv = qkv.reshape(num_query_groups, q_per_group + 2, head_dim, hidden_size)
+                q = qkv[:, :q_per_group, :, :].reshape(-1, hidden_size)
+                k = qkv[:, q_per_group:q_per_group + 1, :, :].reshape(-1, hidden_size)
+                v = qkv[:, q_per_group + 1:, :, :].reshape(-1, hidden_size)
+                hf_state_dict['query_key_value.weight'] = torch.cat([q, k, v], dim=0)
         assert not self.config.add_bias_linear
         return hf_state_dict
 
@@ -92,5 +53,4 @@ register_model(
         ModelType.bailing_moe,
         ['bailing_moe'],
         bridge_cls=BailingMoeBridge,
-        loader=BailingMoeLoader,
     ))
