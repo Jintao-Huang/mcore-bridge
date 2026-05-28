@@ -197,7 +197,7 @@ def _patch_mrope():
 
     def _apply_rotary_pos_emb_thd(t: torch.Tensor, cu_seqlens: torch.Tensor, freqs: torch.Tensor, *args,
                                   **kwargs) -> torch.Tensor:
-        cp_group = pop.get('cp_group', None)
+        cp_group = kwargs.pop('cp_group', None)
         if cp_group is not None:
             cp_size = cp_group.size()
         else:
