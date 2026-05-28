@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
+from megatron.core.tensor_parallel.mappings import (gather_from_tensor_model_parallel_region,
+                                                    scatter_to_tensor_model_parallel_region)
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 from torch import Tensor, nn
@@ -21,6 +23,7 @@ except ImportError:
 
 
 class BailingHybridBridge(BailingMoeBridge):
+    additional_dim0_keys = {'g_proj'}
 
     def _set_layer_attn(self, mg_layer, hf_state_dict, layer_idx: int, to_mcore: bool):
         layer_type = self.config.hf_config.attention_layer_type[layer_idx]
@@ -49,7 +52,6 @@ class BailingMoeV2_5GroupRMSNorm(nn.Module):
         self.group_norm_size = group_norm_size
         self.variance_epsilon = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
-        setattr(self.weight, 'sequence_parallel', config.sequence_parallel)
 
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
@@ -70,14 +72,15 @@ class LinearAttention(BailingMoeSelfAttention):
                               'Please install it via: '
                               "`pip install -U 'flash-linear-attention' --no-build-isolation`")
         super().__init__(config, *args, **kwargs)
-        self.g_proj = TELinear(
+        self.g_proj = TEColumnParallelLinear(
             input_size=config.hidden_size,
             output_size=self.query_projection_size,
             bias=False,
             skip_bias_add=False,
             init_method=config.init_method,
-            parallel_mode='duplicated',
             skip_weight_param_allocation=False,
+            gather_output=False,
+            is_expert=False,
             config=config,
         )
         self.g_norm = BailingMoeV2_5GroupRMSNorm(
@@ -85,6 +88,7 @@ class LinearAttention(BailingMoeSelfAttention):
             self.query_projection_size,
             group_norm_size=config.hf_config.group_norm_size,
             eps=config.layernorm_epsilon)
+        self.g_norm.weight.average_gradients_across_tp_domain = True  # No need to set `sequence_parallel`.
         # https://github.com/sgl-project/sglang/blob/8e0ed75f2d5417015329095dc9a1626df2895acf/python/sglang/srt/layers/attention/linear/lightning_backend.py#L144C12-L149  # noqa
         slope = -self.build_slope_tensor(config.num_attention_heads) * (1 - (self.layer_number - 1) /
                                                                         (config.num_layers - 1) + 1e-5)
@@ -136,7 +140,10 @@ class LinearAttention(BailingMoeSelfAttention):
         finally:
             self.config.multi_latent_attention = multi_latent_attention
 
-    def _apply_rotary(self, query, key, rotary_pos_emb, cu_seqlens):
+    def _apply_rotary(self, query, key, rotary_pos_emb, cu_seqlens=None):
+        if cu_seqlens is not None:
+            query = query.squeeze(1)
+            key = key.squeeze(1)
         nvtx_range_push(suffix='rotary_pos_emb')
         q_pos_emb, k_pos_emb = rotary_pos_emb
 
@@ -160,9 +167,12 @@ class LinearAttention(BailingMoeSelfAttention):
                 cp_group=self.pg_collection.cp,
             )
         nvtx_range_pop(suffix='rotary_pos_emb')
+        if cu_seqlens is not None:
+            query = query.unsqueeze(1)
+            key = key.unsqueeze(1)
         return query, key
 
-    def _forward_core_attention(self, query, key, value, attention_mask, cu_seqlens):
+    def _forward_core_attention(self, query, key, value, attention_mask, cu_seqlens=None):
         nvtx_range_push(suffix='core_attention')
         query = query.transpose(0, 1)
         core_attn_out, _ = fused_recurrent_simple_gla(
@@ -191,14 +201,15 @@ class LinearAttention(BailingMoeSelfAttention):
                 cu_seqlens_q = packed_seq_params.cu_seqlens_q
         else:
             cu_seqlens_q = None
-        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
-            query = query.squeeze(1)
-            key = key.squeeze(1)
-            value = value.squeeze(1)
         with self._patch_attention_scaling():
             query, key = self._apply_rotary(query, key, rotary_pos_emb, cu_seqlens_q)
         core_attn_out = self._forward_core_attention(query, key, value, attention_mask, cu_seqlens_q)
+        enable_tp = self.config.tensor_model_parallel_size > 1
+        if enable_tp:
+            core_attn_out = gather_from_tensor_model_parallel_region(core_attn_out)
         core_attn_out = self.g_norm(core_attn_out)
+        if enable_tp:
+            core_attn_out = scatter_to_tensor_model_parallel_region(core_attn_out)
         g_proj = self.g_proj(hidden_states)[0]
         core_attn_out = core_attn_out * torch.sigmoid_(g_proj)
         nvtx_range_push(suffix='linear_proj')
