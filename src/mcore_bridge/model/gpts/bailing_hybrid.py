@@ -1,15 +1,24 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import math
 import torch
-from megatron.core.extensions.transformer_engine import TELinear
+from contextlib import contextmanager
+from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear
+from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
+from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 from torch import Tensor, nn
 from typing import Optional, Tuple
 
 from ..constant import ModelType
 from ..register import ModelLoader, ModelMeta, register_model
 from .bailing_moe import BailingMoeBridge, BailingMoeSelfAttention
+
+try:
+    from fla.ops.simple_gla.fused_recurrent import fused_recurrent_simple_gla
+except ImportError:
+    fused_recurrent_simple_gla = None
 
 
 class BailingHybridBridge(BailingMoeBridge):
@@ -20,16 +29,14 @@ class BailingHybridBridge(BailingMoeBridge):
         if layer_type == 'attention':
             hf_state_dict.update(
                 self._set_mla_attn_state(mg_attn, hf_state_dict, f'{self.hf_attn_prefix}.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, self.hf_input_layernorm_key,
-                                 to_mcore)
+
         elif layer_type == 'linear_attention':
             hf_state_dict.update(
                 self._set_attn_state(mg_attn, hf_state_dict, f'{self.hf_attn_prefix}.', layer_idx, to_mcore))
-            self._set_state_dict(mg_layer, 'self_attention.linear_qkv.layer_norm_weight', hf_state_dict,
-                                 self.hf_input_layernorm_key, to_mcore)
             for key in ['g_proj', 'g_norm']:
                 self._set_state_dict(mg_layer, f'self_attention.{key}.weight', hf_state_dict, f'attention.{key}.weight',
                                      to_mcore)
+        self._set_state_dict(mg_layer, 'input_layernorm.weight', hf_state_dict, self.hf_input_layernorm_key, to_mcore)
         return hf_state_dict
 
 
@@ -59,6 +66,10 @@ class BailingMoeV2_5GroupRMSNorm(nn.Module):
 class LinearAttention(BailingMoeSelfAttention):
 
     def __init__(self, config: TransformerConfig, *args, **kwargs):
+        if fused_recurrent_simple_gla is None:
+            raise ImportError('flash-linear-attention is required but not installed. '
+                              'Please install it via: '
+                              "`pip install -U 'flash-linear-attention' --no-build-isolation`")
         super().__init__(config, *args, **kwargs)
         self.g_proj = TELinear(
             input_size=config.hidden_size,
@@ -75,6 +86,7 @@ class LinearAttention(BailingMoeSelfAttention):
             self.query_projection_size,
             group_norm_size=config.hf_config.group_norm_size,
             eps=config.layernorm_epsilon)
+        # https://github.com/sgl-project/sglang/blob/8e0ed75f2d5417015329095dc9a1626df2895acf/python/sglang/srt/layers/attention/linear/lightning_backend.py#L144C12-L149  # noqa
         slope = -self.build_slope_tensor(config.num_attention_heads) * (1 - (self.layer_number - 1) /
                                                                         (config.num_layers - 1) + 1e-5)
         self.register_buffer('slope', slope, persistent=False)
@@ -116,8 +128,86 @@ class LinearAttention(BailingMoeSelfAttention):
         slopes = torch.tensor(get_slopes(n_attention_heads), dtype=torch.float)
         return slopes
 
+    @contextmanager
+    def _patch_attention_scaling(self):
+        multi_latent_attention = self.config.multi_latent_attention
+        self.config.multi_latent_attention = False
+        try:
+            yield
+        finally:
+            self.config.multi_latent_attention = multi_latent_attention
+
+    def _apply_rotary(self, query, key, rotary_pos_emb, cu_seqlens):
+        nvtx_range_push(suffix='rotary_pos_emb')
+        q_pos_emb, k_pos_emb = rotary_pos_emb
+
+        if q_pos_emb is not None:
+            # TODO VIJAY: simplify
+            query = apply_rotary_pos_emb(
+                query,
+                q_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens,
+                mscale=_yarn_get_concentration_factor_from_config(self.config),
+                cp_group=self.pg_collection.cp,
+            )
+        if k_pos_emb is not None:
+            key = apply_rotary_pos_emb(
+                key,
+                k_pos_emb,
+                config=self.config,
+                cu_seqlens=cu_seqlens,
+                mscale=_yarn_get_concentration_factor_from_config(self.config),
+                cp_group=self.pg_collection.cp,
+            )
+        nvtx_range_pop(suffix='rotary_pos_emb')
+        return query, key
+
+    def _forward_core_attention(self, query, key, value, attention_mask, cu_seqlens):
+        nvtx_range_push(suffix='core_attention')
+        query = query.transpose(0, 1)
+        core_attn_out, _ = fused_recurrent_simple_gla(
+            q=query,
+            k=key.transpose(0, 1),
+            v=value.transpose(0, 1),
+            g=self.slope[None, None, :].expand(*query.shape[:2], self.config.num_attention_heads),
+            initial_state=None,
+            output_final_state=False,
+            cu_seqlens=cu_seqlens,
+        )
+        nvtx_range_pop(suffix='core_attention')
+        core_attn_out = core_attn_out.view(*core_attn_out.shape[:2], -1)
+        return core_attn_out.transpose(0, 1)
+
     def forward(self, hidden_states: Tensor, attention_mask: Tensor, **kwargs) -> Tuple[Tensor, Tensor]:
-        return super().forward(hidden_states, attention_mask, **kwargs)
+        rotary_pos_emb = kwargs.get('rotary_pos_emb')
+        packed_seq_params = kwargs.get('packed_seq_params')
+        query, key, value = self.get_query_key_value_tensors(hidden_states)
+        if isinstance(rotary_pos_emb, torch.Tensor):
+            rotary_pos_emb = (rotary_pos_emb, ) * 2
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            if packed_seq_params.cu_seqlens_q_padded is not None:
+                cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
+            else:
+                cu_seqlens_q = packed_seq_params.cu_seqlens_q
+            if packed_seq_params.cu_seqlens_kv_padded is not None:
+                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv_padded
+            else:
+                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
+        else:
+            cu_seqlens_q = cu_seqlens_kv = None
+        assert cu_seqlens_q == cu_seqlens_kv
+
+        with self._patch_attention_scaling():
+            query, key = self._apply_rotary(query, key, rotary_pos_emb, cu_seqlens_q)
+        core_attn_out = self._forward_core_attention(query, key, value, attention_mask, cu_seqlens_q)
+        core_attn_out = self.g_norm(core_attn_out)
+        g_proj = self.g_proj(hidden_states)[0]
+        core_attn_out = core_attn_out * torch.sigmoid_(g_proj)
+        nvtx_range_push(suffix='linear_proj')
+        output, bias = self.linear_proj(core_attn_out)
+        nvtx_range_pop(suffix='linear_proj')
+        return output, bias
 
 
 class BailingHybridLoader(ModelLoader):
@@ -140,8 +230,8 @@ class BailingHybridLoader(ModelLoader):
             if hf_config.attention_layer_type[i] == 'linear_attention':
                 linear_spec = linear_layer_specs.layer_specs[i].submodules.self_attention
                 linear_spec.module = LinearAttention
+                linear_spec.submodules.linear_qkv = TEColumnParallelLinear
                 layer_spec.submodules.self_attention = linear_spec
-                layer_spec.submodules.input_layernorm = IdentityOp
         return layer_specs
 
 
