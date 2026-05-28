@@ -189,13 +189,8 @@ class LinearAttention(BailingMoeSelfAttention):
                 cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
             else:
                 cu_seqlens_q = packed_seq_params.cu_seqlens_q
-            if packed_seq_params.cu_seqlens_kv_padded is not None:
-                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv_padded
-            else:
-                cu_seqlens_kv = packed_seq_params.cu_seqlens_kv
         else:
-            cu_seqlens_q = cu_seqlens_kv = None
-        assert cu_seqlens_q == cu_seqlens_kv
+            cu_seqlens_q = None
 
         with self._patch_attention_scaling():
             query, key = self._apply_rotary(query, key, rotary_pos_emb, cu_seqlens_q)
