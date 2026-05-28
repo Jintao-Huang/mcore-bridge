@@ -2,6 +2,7 @@
 import copy
 import math
 import torch
+from contextlib import contextmanager
 from megatron.core.extensions.transformer_engine import (SplitAlongDim, TEColumnParallelLinear, TENorm,
                                                          TERowParallelLinear)
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
@@ -20,6 +21,7 @@ from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.utils import make_viewless_tensor, nvtx_range_pop, nvtx_range_push
+from swift.utils import get_logger
 from torch import Tensor, nn
 from transformers import AutoModel, PretrainedConfig
 from transformers.utils.versions import require_version
@@ -35,6 +37,8 @@ from ..modules import TransformerBlock, TransformerLayer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 from .utils import HuggingFaceVit
+
+logger = get_logger()
 
 
 class Gemma4RMSNormNoScale(torch.nn.Module):
@@ -148,12 +152,15 @@ class Gemma4SelfAttention(SelfAttention):
             if self.use_alternative_attention else text_config.num_key_value_heads)
         # Shared KV across the trailing layers
         self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
-        first_kv_shared_layer_idx = config.num_layers - self.num_kv_shared_layers
-        self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
-        prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
-        self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == len(
-            prev_layers) - 1 - prev_layers[::-1].index(text_config.layer_types[layer_idx])
-
+        if self.num_kv_shared_layers:
+            first_kv_shared_layer_idx = config.num_layers - self.num_kv_shared_layers
+            self.is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+            prev_layers = text_config.layer_types[:first_kv_shared_layer_idx]
+            self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == len(
+                prev_layers) - 1 - prev_layers[::-1].index(text_config.layer_types[layer_idx])
+        else:
+            self.is_kv_shared_layer = False
+            self.store_full_length_kv = False
         orig_kv_channels = config.kv_channels
         orig_num_query_groups = config.num_query_groups
         orig_k_layernorm = submodules.k_layernorm
@@ -230,6 +237,16 @@ class Gemma4SelfAttention(SelfAttention):
         nvtx_range_pop(suffix='core_attention')
         return core_attn_out
 
+    @contextmanager
+    def _patch_attention_scaling(self):
+        attention_scaling = self.config.attention_scaling
+        if not self.is_sliding:
+            self.config.attention_scaling = self.config.full_attention_scaling
+        try:
+            yield
+        finally:
+            self.config.attention_scaling = attention_scaling
+
     def _apply_rotary(self, query, key, rotary_pos_emb, packed_seq_params):
         nvtx_range_push(suffix='rotary_pos_emb')
         q_pos_emb, k_pos_emb = rotary_pos_emb
@@ -280,6 +297,7 @@ class Gemma4SelfAttention(SelfAttention):
             size = mixed_qkv.size()[-1] // self.config.num_query_groups
             mixed_qkv = mixed_qkv[:, :, idx * size:(idx + 1) * size]
 
+        thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
         if self.is_kv_shared_layer:
             query = mixed_qkv
             key, value = shared_kv_states[self.layer_type]
@@ -304,6 +322,9 @@ class Gemma4SelfAttention(SelfAttention):
                 query, key, value = qkv
             key = self.k_layernorm(key)
             value = self.v_norm(value)
+            if thd_format:
+                key = key.squeeze(1)
+                value = value.squeeze(1)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
         if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
@@ -313,8 +334,10 @@ class Gemma4SelfAttention(SelfAttention):
         query = self.q_layernorm(query)
         if isinstance(rotary_pos_emb, torch.Tensor):
             rotary_pos_emb = (rotary_pos_emb, ) * 2
-
-        query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
+        if thd_format:
+            query = query.squeeze(1)
+        with self._patch_attention_scaling():
+            query, key = self._apply_rotary(query, key, rotary_pos_emb, packed_seq_params)
         if self.store_full_length_kv:
             shared_kv_states[self.layer_type] = key, value
         core_attn_out = self._forward_core_attention(query, key, value, attention_mask, attention_bias,
@@ -340,13 +363,21 @@ class Gemma4MLP(MLP):
         text_config = config.hf_config.text_config
         first_kv_shared_layer_idx = config.num_layers - text_config.num_kv_shared_layers
         is_kv_shared_layer = layer_number > first_kv_shared_layer_idx > 0
-        use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
+        self.use_double_wide_mlp = text_config.use_double_wide_mlp and is_kv_shared_layer
         ffn_hidden_size = config.ffn_hidden_size
-        config.ffn_hidden_size = config.ffn_hidden_size * (2 if use_double_wide_mlp else 1)
+        config.ffn_hidden_size = config.ffn_hidden_size * (2 if self.use_double_wide_mlp else 1)
         try:
             super().__init__(config, submodules, *args, **kwargs)
         finally:
             config.ffn_hidden_size = ffn_hidden_size
+
+    @classmethod
+    def as_mlp_submodule(cls, *args, layer_number: int, **kwargs) -> MLP:
+        pg_collection = kwargs.pop('pg_collection')
+        kwargs.pop('is_mtp_layer', None)
+        assert hasattr(pg_collection, 'tp'), 'TP process group is required for MLP in TransformerLayer'
+        kwargs['tp_group'] = pg_collection.tp
+        return cls(*args, layer_number=layer_number, **kwargs)
 
 
 class Gemma4MoELayer(MoELayer):
@@ -376,7 +407,6 @@ class Gemma4MoELayer(MoELayer):
 
 
 class Gemma4Bridge(MultimodalGPTBridge):
-    hf_post_attention_layernorm = 'pre_feedforward_layernorm'
     additional_dim0_keys = {'embed_tokens_per_layer', 'per_layer_input_gate', 'per_layer_model_projection'}
     additional_dim1_keys = {'per_layer_projection'}
 
@@ -418,7 +448,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
                 if use_alternative_attention else text_config.num_key_value_heads)
             return super()._set_qkv(mg_attn, hf_state_dict, to_mcore, **kwargs)
 
-    def _set_router(self, mg_mlp, hf_state_dict, to_mcore):
+    def _set_router(self, mg_mlp, hf_state_dict, to_mcore, **kwargs):
         self._set_state_dict(mg_mlp, 'router.weight', hf_state_dict, 'router.proj.weight', to_mcore)
         for key in ['per_expert_scale', 'scale']:
             self._set_state_dict(mg_mlp, key, hf_state_dict, f'router.{key}', to_mcore)
@@ -427,7 +457,7 @@ class Gemma4Bridge(MultimodalGPTBridge):
         mg_mlp = None if mg_layer is None else mg_layer.mlp
         hf_state_dict.update(self._set_mlp_state(mg_mlp, hf_state_dict, f'{self.hf_mlp_prefix}.', layer_idx, to_mcore))
         self._set_state_dict(mg_layer, 'mlp.linear_fc1.layer_norm_weight', hf_state_dict,
-                             f'{self.hf_post_attention_layernorm}.weight', to_mcore)
+                             'pre_feedforward_layernorm.weight', to_mcore)
         if self.text_config.enable_moe_block:
             mg_experts = None if mg_layer is None else mg_layer.experts_mlp
             hf_state_dict.update(self._set_moe_state(mg_experts, hf_state_dict, '', layer_idx, to_mcore, is_mtp=is_mtp))
@@ -470,10 +500,21 @@ class Gemma4Bridge(MultimodalGPTBridge):
 class Gemma4TextGPTModel(GPTModel):
     extra_forward_keys = ['mm_token_type_ids']
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, *args, **kwargs):
+        # If set to "vision", pass attention_mask manually.
+        text_config = config.hf_config.text_config
+        if text_config.use_bidirectional_attention == 'vision':
+            if config.attention_backend.name != 'unfused':
+                logger.warning(
+                    f'attention_backend {config.attention_backend.name} does not support use_bidirectional_attention '
+                    'for vision. Setting `use_bidirectional_attention` to None. Note: This may cause computational '
+                    'errors in multimodal scenarios. Please always pass pure text data.')
+                text_config.use_bidirectional_attention = None
+            else:
+                config.window_size = None
+                config.window_attn_skip_freq = None
+        super().__init__(config, *args, **kwargs)
         self.num_query_groups_per_partition = self.decoder.layers[0].self_attention.num_query_groups_per_partition
-        text_config = self.config.hf_config.text_config
         self.text_config = text_config
         self.num_kv_shared_layers = getattr(text_config, 'num_kv_shared_layers', 0)
         self.unique_layer_types = set(text_config.layer_types)
@@ -524,7 +565,7 @@ class Gemma4TextGPTModel(GPTModel):
         rope_scaling = self.config.rope_scaling
         self.config.rope_scaling = rope_scaling['sliding_attention']
         new_inv_freq, attention_scaling = get_rope_inv_freq(self.config)
-        assert attention_scaling == 1, 'not support'
+        self.config.attention_scaling = attention_scaling
         self.rotary_pos_emb.inv_freq = new_inv_freq.to(self.rotary_pos_emb.inv_freq.device)
         # full
         self.full_rotary_pos_emb = copy.copy(self.rotary_pos_emb)
@@ -534,9 +575,8 @@ class Gemma4TextGPTModel(GPTModel):
             kwargs['head_dim_key'] = 'global_head_dim'
         new_inv_freq, attention_scaling = get_rope_inv_freq(
             self.config, text_config=self.config.hf_config.text_config, **kwargs)
-        assert attention_scaling == 1, 'not support'
         self.full_rotary_pos_emb.inv_freq = new_inv_freq
-        self.attention_scaling = attention_scaling
+        self.config.full_attention_scaling = attention_scaling
 
         self.config.rope_scaling = rope_scaling
 
@@ -661,6 +701,7 @@ class Gemma4TransformerLayer(TransformerLayer):
     def __init__(self, config, submodules, *args, **kwargs):
         super().__init__(config, submodules, *args, **kwargs)
         text_config = config.hf_config.text_config
+        self.layer_type = text_config.layer_types[self.layer_number - 1]
         self.enable_moe_block = text_config.enable_moe_block
         if self.enable_moe_block:
             self.experts_mlp = self._build_mlp(submodules.experts_mlp)
@@ -711,6 +752,8 @@ class Gemma4TransformerLayer(TransformerLayer):
                 TENorm, hidden_size=hidden_size, config=self.config, eps=eps)
 
     def _forward_attention(self, hidden_states: Tensor, **kwargs):
+        kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][self.layer_type]
+        kwargs['attention_mask'] = kwargs['attention_mask'][self.layer_type]
         context = kwargs.pop('context', None)
         residual = hidden_states
         input_layernorm_output = self.input_layernorm(hidden_states)
@@ -768,13 +811,9 @@ class Gemma4GPTModel(MultimodalGPTModel):
 class Gemma4TransformerBlock(TransformerBlock):
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
-        layer_number = layer.layer_number - 1
         per_layer_inputs = kwargs.pop('per_layer_inputs', None)
         if per_layer_inputs is not None:
-            kwargs['per_layer_input'] = per_layer_inputs[:, :, layer_number]
-        layer_type = self.config.hf_config.text_config.layer_types[layer_number]
-        kwargs['rotary_pos_emb'] = kwargs['rotary_pos_emb'][layer_type]
-        kwargs['attention_mask'] = kwargs['attention_mask'][layer_type]
+            kwargs['per_layer_input'] = per_layer_inputs[:, :, layer.layer_number - 1]
         return super()._layer_forward(layer, hidden_states, **kwargs)
 
 
@@ -789,19 +828,22 @@ class Gemma4Loader(ModelLoader):
             self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
         for layer_spec in layer_specs.layer_specs:
             layer_spec.submodules.self_attention.module = Gemma4SelfAttention
-            layer_spec.submodules.mlp.module = Gemma4MLP
+            self._set_mlp_spec(layer_spec.submodules, Gemma4MLP)
         if num_moe_experts is not None:
             self.config.num_moe_experts = num_moe_experts
             moe_layer_specs = get_gpt_decoder_block_spec(
                 self.config, use_transformer_engine=True, normalization=self.config.normalization, vp_stage=vp_stage)
             for layer_spec, moe_layer_spec in zip(layer_specs.layer_specs, moe_layer_specs.layer_specs):
                 layer_spec.submodules.experts_mlp = moe_layer_spec.submodules.mlp
-                layer_spec.submodules.experts_mlp.module = Gemma4MoELayer
+                self._set_mlp_spec(layer_spec.submodules, Gemma4MoELayer, mlp_key='experts_mlp')
         return layer_specs
 
     def _set_transformer_layer(self, transformer_layer_spec):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.module = Gemma4TransformerLayer
+
+    def _replace_router(self, transformer_layer_spec, mlp_key='experts_mlp'):
+        super()._replace_router(transformer_layer_spec, mlp_key=mlp_key)
 
 
 register_model(

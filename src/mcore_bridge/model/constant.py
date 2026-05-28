@@ -10,6 +10,7 @@ class LLMModelType:
     hy_v3 = 'hy_v3'
     bailing_moe = 'bailing_moe'
     bailing_hybrid = 'bailing_hybrid'
+    deepseek_v4 = 'deepseek_v4'
 
     qwen3_emb = 'qwen3_emb'
 
