@@ -1,15 +1,15 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
+from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
+from typing import Optional, Tuple, Union
 
 from mcore_bridge.bridge import GPTBridge
+
 from ..constant import ModelType
 from ..register import ModelLoader, ModelMeta, register_model
-from typing import Optional, Union, Tuple
-from megatron.core.transformer.attention import SelfAttention
-from megatron.core.transformer.attention import SelfAttentionSubmodules
-from megatron.core.transformer.transformer_config import TransformerConfig
 
 
 class BailingHybridBridge(GPTBridge):
@@ -17,10 +17,12 @@ class BailingHybridBridge(GPTBridge):
 
 
 class LinearAttention(SelfAttention):
+
     def __init__(
         self,
         config: TransformerConfig,
-        *args, **kwargs,
+        *args,
+        **kwargs,
     ):
         super().__init__(config, *args, **kwargs)
 
@@ -41,9 +43,7 @@ class BailingHybridLoader(ModelLoader):
         group_size = hf_config.layer_group_size
         tail_start = num_layers // group_size * group_size
         hf_config.attention_layer_type = [
-            "attention"
-            if (layer_idx + 1) % group_size == 0 or layer_idx >= tail_start
-            else "linear_attention"
+            'attention' if (layer_idx + 1) % group_size == 0 or layer_idx >= tail_start else 'linear_attention'
             for layer_idx in range(num_layers)
         ]
         layer_specs = super().get_transformer_layer_spec(vp_stage=vp_stage)

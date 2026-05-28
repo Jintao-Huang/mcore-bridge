@@ -104,13 +104,23 @@ class ModelLoader:
             dsa_spec.submodules.linear_kv_up_proj = linear_q_up_proj
         layer_spec.submodules.self_attention = dsa_spec
 
+    @contextmanager
+    def _patch_experimental_attention_variant(self):
+        experimental_attention_variant = self.config.experimental_attention_variant
+        self.config.experimental_attention_variant = None
+        try:
+            yield
+        finally:
+            self.config.experimental_attention_variant = experimental_attention_variant
+
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
-        transformer_layer_spec = get_gpt_decoder_block_spec(
-            self.config,
-            use_transformer_engine=True,
-            normalization=self.config.normalization,
-            qk_l2_norm=self.config.qk_l2_norm,
-            vp_stage=vp_stage)
+        with self._patch_experimental_attention_variant():
+            transformer_layer_spec = get_gpt_decoder_block_spec(
+                self.config,
+                use_transformer_engine=True,
+                normalization=self.config.normalization,
+                qk_l2_norm=self.config.qk_l2_norm,
+                vp_stage=vp_stage)
         if self.config.experimental_attention_variant == 'dsa':
             for layer_spec in transformer_layer_spec.layer_specs:
                 self._replace_spec_dsa(layer_spec)
