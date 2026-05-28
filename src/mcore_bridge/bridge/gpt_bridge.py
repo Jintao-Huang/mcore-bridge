@@ -542,6 +542,8 @@ class GPTBridge:
         return tensor
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
+        # qkv: split along dim=0: [H*{qkv*a}, b]
+        # linear_fc1: split along dim=1, [2, x, y]
         config = self.config
         num_query_groups = kwargs.get('num_query_groups')
         if num_query_groups is None:

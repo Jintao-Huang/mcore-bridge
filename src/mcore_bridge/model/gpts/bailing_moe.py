@@ -72,7 +72,17 @@ class BailingMoeBridge(GPTBridge):
     hf_o_proj_key = 'dense'
 
     def _set_qkv(self, mg_attn, hf_state_dict, to_mcore: bool, **kwargs):
-        self._set_state_dict(mg_attn, 'linear_qkv.weight', hf_state_dict, 'query_key_value.weight', to_mcore)
+        config = self.config
+        assert config.num_query_groups == config.num_attention_heads
+        if to_mcore:
+            qkv = hf_state_dict['query_key_value.weight'].load()
+            qkv = qkv.reshape(3, -1, config.hidden_size).transpose(0, 1).reshape(-1, config.hidden_size)
+            self._set_weight(mg_attn.linear_qkv.weight, qkv, 'linear_qkv.weight', hf_scale_inv=None)
+        else:
+            qkv = self._get_weight(None if mg_attn is None else mg_attn.linear_qkv.weight.data, 'linear_qkv.weight')[0]
+            if qkv is not None:
+                qkv = qkv.reshape(-1, 3, config.hidden_size).transpose(0, 1).reshape(-1, config.hidden_size)
+                hf_state_dict['query_key_value.weight'] = qkv
         assert not self.config.add_bias_linear
         return hf_state_dict
 
