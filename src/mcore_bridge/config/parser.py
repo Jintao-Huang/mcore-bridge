@@ -133,6 +133,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
     mlp_ffn_hidden_size = res.pop('mlp_ffn_hidden_size', None)
     interleave_moe_layer_step = res.pop('interleave_moe_layer_step', None)
     window_size = res.pop('window_size', None)
+    moe_n_hash_layers = res.pop('moe_n_hash_layers', None)
     rope_scaling = res.get('rope_scaling') or {}
     if llm_model_type in {'qwen3', 'qwen3_moe', 'qwen3_next'} or hf_model_type in {
             'qwen3_omni_moe', 'qwen3_omni', 'qwen3_vl', 'qwen3_vl_moe', 'qwen3_5', 'qwen3_5_moe', 'llavaonevision1_5'
@@ -161,7 +162,6 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             res['enable_hyper_connections'] = True
             csa_compress_ratios = res.pop('csa_compress_ratios', None)
             res['csa_compress_ratios'] = [csa_compress_ratios.get(layer_type, 0) for layer_type in layer_types]
-            moe_n_hash_layers = res.pop('moe_n_hash_layers', None)
             res['moe_n_hash_layers'] = len([layer for layer in moe_n_hash_layers if layer == 'hash_moe'])
     elif llm_model_type == 'hunyuan':
         # Since HunYuan’s attention applies RoPE before using q/k_layernorm,
