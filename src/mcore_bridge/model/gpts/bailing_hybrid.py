@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
-from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 from torch import Tensor, nn
