@@ -2,6 +2,7 @@
 import math
 import torch
 from contextlib import contextmanager
+from megatron.core import parallel_state
 from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TELinear
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.yarn_rotary_pos_embedding import _yarn_get_concentration_factor_from_config
@@ -93,6 +94,10 @@ class LinearAttention(SelfAttention):
         # https://github.com/sgl-project/sglang/blob/8e0ed75f2d5417015329095dc9a1626df2895acf/python/sglang/srt/layers/attention/linear/lightning_backend.py#L144C12-L149  # noqa
         slope = -self.build_slope_tensor(config.num_attention_heads) * (1 - (self.layer_number - 1) /
                                                                         (config.num_layers - 1) + 1e-5)
+        # Slice slope to current TP rank: each rank only owns `num_attention_heads_per_partition` heads.
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        heads_per_partition = self.num_attention_heads_per_partition
+        slope = slope[tp_rank * heads_per_partition:(tp_rank + 1) * heads_per_partition].contiguous()
         self.register_buffer('slope', slope, persistent=False)
 
     @staticmethod
@@ -180,7 +185,7 @@ class LinearAttention(SelfAttention):
             q=query,
             k=key.transpose(0, 1),
             v=value.transpose(0, 1),
-            g=self.slope[None, None, :].expand(*query.shape[:2], self.config.num_attention_heads),
+            g=self.slope[None, None, :].expand(*query.shape[:2], self.num_attention_heads_per_partition),
             initial_state=None,
             output_final_state=False,
             cu_seqlens=cu_seqlens,
