@@ -191,7 +191,10 @@ class LinearAttention(BailingMoeSelfAttention):
                 cu_seqlens_q = packed_seq_params.cu_seqlens_q
         else:
             cu_seqlens_q = None
-
+        if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+            query = query.squeeze(1)
+            key = key.squeeze(1)
+            value = value.squeeze(1)
         with self._patch_attention_scaling():
             query, key = self._apply_rotary(query, key, rotary_pos_emb, cu_seqlens_q)
         core_attn_out = self._forward_core_attention(query, key, value, attention_mask, cu_seqlens_q)
