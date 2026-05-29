@@ -141,11 +141,12 @@ class Qwen3NextLoader(ModelLoader):
         for layer in lm_model.decoder.layers:
             if hasattr(layer.self_attention, 'out_norm'):
                 out_norm = layer.self_attention.out_norm
+                out_norm.zero_centered_gamma = False
                 if not is_torch_npu_available():
                     assert hasattr(out_norm, 'zero_centered_gamma')
-                out_norm.config = copy.copy(out_norm.config)
-                out_norm.config.layernorm_zero_centered_gamma = False
-                out_norm.zero_centered_gamma = False
+                if hasattr(out_norm, 'config'):
+                    out_norm.config = copy.copy(out_norm.config)
+                    out_norm.config.layernorm_zero_centered_gamma = False
         return model
 
 
