@@ -213,6 +213,8 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res.setdefault('linear_attention_freq', 4)
     elif llm_model_type == 'minimax_m2':
         res['add_qkv_bias'] = False
+    elif llm_model_type == 'olmoe':
+        res['qk_layernorm'] = True
     elif hf_model_type == 'llama4':
         qk_layernorm = res.pop('qk_layernorm', False)
         if qk_layernorm:
