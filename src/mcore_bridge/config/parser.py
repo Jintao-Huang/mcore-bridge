@@ -124,7 +124,9 @@ def _get_tie_word_embeddings(config_dict):
     tie_word_embeddings = config_dict.get('tie_word_embeddings')
     for key in ['text_config', 'llm_config', 'thinker_config']:
         if config_dict.get(key) is not None:
-            tie_word_embeddings = _get_tie_word_embeddings(config_dict[key])
+            value = _get_tie_word_embeddings(config_dict[key])
+            if value is not None:
+                tie_word_embeddings = value
     return tie_word_embeddings
 
 
