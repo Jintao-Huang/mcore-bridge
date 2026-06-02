@@ -4,12 +4,13 @@ import torch
 from mcore_bridge.bridge import GPTBridge
 
 from ..constant import ModelType
+from ..gpts.qwen3_next_gdn import Qwen3NextGDNBridge, Qwen3NextLoader
 from ..register import ModelMeta, register_model
 from .qwen3_vl import Qwen3VL_Vit, Qwen3VLLoader
 from .utils import HuggingFaceVit
 
 
-class Qwen3OmniNextBridge(GPTBridge):
+class Qwen3OmniNextBridge(Qwen3NextGDNBridge):
     hf_layers_prefix = 'thinker.model.layers'
     hf_embed_key = 'thinker.model.embed_tokens.weight'
     hf_final_layernorm_key = 'thinker.model.norm.weight'
@@ -65,11 +66,15 @@ class Qwen3OmniNext_Vit(HuggingFaceVit):
             return self.model_cls.get_audio_features(self, *args, **kwargs)
 
 
+class Qwen3OmniNextLoader(Qwen3VLLoader, Qwen3NextLoader):
+    pass
+
+
 register_model(
     ModelMeta(
         ModelType.qwen3_omni_next,
         ['qwen3_omni_next'],
         bridge_cls=Qwen3OmniNextBridge,
         visual_cls=Qwen3OmniNext_Vit,
-        loader=Qwen3VLLoader,
+        loader=Qwen3OmniNextLoader,
     ))

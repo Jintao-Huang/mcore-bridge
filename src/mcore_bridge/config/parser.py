@@ -143,7 +143,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
     if llm_model_type in {'qwen2_moe', 'qwen3_moe', 'qwen3_next'
                           } or hf_model_type in {'qwen3_omni_moe', 'qwen3_vl_moe', 'qwen3_5_moe', 'qwen3_omni_next'}:
         res.pop('ffn_hidden_size', None)
-        if llm_model_type in {'qwen2_moe', 'qwen3_next'} or hf_model_type == 'qwen3_5_moe':
+        if llm_model_type in {'qwen2_moe', 'qwen3_next'} or hf_model_type in {'qwen3_5_moe', 'qwen3_omni_next'}:
             res['moe_shared_expert_gate'] = True
     if llm_model_type in {'deepseek', 'deepseek_v2', 'deepseek_v3', 'kimi_k2', 'deepseek_v32', 'dots1', 'deepseek_v4'
                           } or hf_model_type == 'kimi_vl':
@@ -205,7 +205,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
             res.pop('num_query_groups', None)
         if llm_model_type == 'glm_moe_dsa':
             res['experimental_attention_variant'] = 'dsa'
-    elif llm_model_type == 'qwen3_next' or hf_model_type in {'qwen3_5', 'qwen3_5_moe'}:
+    elif llm_model_type == 'qwen3_next' or hf_model_type in {'qwen3_5', 'qwen3_5_moe', 'qwen3_omni_next'}:
         use_mcore_gdn = get_env_args('USE_MCORE_GDN', bool, True)
         res['layernorm_zero_centered_gamma'] = True
         res['attention_output_gate'] = True
