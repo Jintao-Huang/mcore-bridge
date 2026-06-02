@@ -144,7 +144,7 @@ The following is the list of models supported by MCore-Bridge:
 **multimodal large models:**
 | Series     | model_type                                            |
 | -------- | ------------------------------------------------------------ |
-| Qwen     | qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_5, qwen3_5_moe |
+| Qwen     | qwen2_vl, qwen2_5_vl, qwen2_5_omni<br />qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_asr<br />qwen3_5, qwen3_5_moe, qwen3_omni_next |
 | Gemma     | gemma4                                   |
 | GLM      | glm4v, glm4v_moe |
 | Kimi     | kimi_vl                                   |
