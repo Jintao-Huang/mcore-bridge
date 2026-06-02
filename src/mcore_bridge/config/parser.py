@@ -120,8 +120,24 @@ def _convert_config(config, _internal_call=False) -> Dict[str, Any]:
     return megatron_config
 
 
+def _get_tie_word_embeddings(config_dict):
+    tie_word_embeddings = config_dict.get('tie_word_embeddings')
+    for key in ['text_config', 'llm_config', 'thinker_config']:
+        if config_dict.get(key) is not None:
+            value = _get_tie_word_embeddings(config_dict[key])
+            if value is not None:
+                tie_word_embeddings = value
+    return tie_word_embeddings
+
+
 def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
     res = _convert_config(hf_config)
+    if hf_config.name_or_path:
+        # fix Qwen3-Omni
+        config_dict = PretrainedConfig.get_config_dict(hf_config.name_or_path)[0]
+        tie_word_embeddings = _get_tie_word_embeddings(config_dict)
+        if tie_word_embeddings is not None:
+            res['untie_embeddings_and_output_weights'] = not tie_word_embeddings
     res['hf_config'] = hf_config
     hf_model_type = res.get('hf_model_type')
     llm_model_type = res.get('llm_model_type') or hf_model_type
