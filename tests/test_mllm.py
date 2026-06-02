@@ -99,6 +99,10 @@ def test_qwen3_omni():
     _test_model('Qwen/Qwen3-Omni-30B-A3B-Instruct')
 
 
+def test_qwen3_omni_next():
+    _test_model('/mnt/data/jintao/llmscope/qwen3_5_omni/omni2')
+
+
 def test_llama4():
     _test_model('LLM-Research/Llama-4-Scout-17B-16E-Instruct')
 
@@ -137,8 +141,9 @@ if __name__ == '__main__':
     # test_qwen3_vl()
     # test_qwen3_vl_moe()
     # test_qwen3_omni()
+    test_qwen3_omni_next()
     # test_llama4()
     # test_qwen3_5()
     # test_llava_onevision1_5()
     # test_qwen3_asr()
-    test_gemma4()
+    # test_gemma4()
