@@ -31,6 +31,13 @@ except ImportError:
 
 @contextmanager
 def _patch_YarnRotaryEmbedding(config):
+    """Temporarily patch missing rope scaling attrs on config for YarnRotaryEmbedding init.
+
+    YarnRotaryEmbedding requires beta_fast/beta_slow/mscale/mscale_all_dim on config,
+    but DeepSeek-V4 HF config may not include them. This context manager sets defaults
+    on entry and removes them on exit, keeping the config clean (the resulting
+    YarnRotaryEmbedding module will be deleted later anyway).
+    """
     defaults = {
         'beta_fast': 32.0,
         'beta_slow': 1.0,
@@ -45,6 +52,7 @@ def _patch_YarnRotaryEmbedding(config):
     try:
         yield config
     finally:
+        # Restore: remove attrs that were temporarily added
         for attr in added:
             delattr(config, attr)
 
