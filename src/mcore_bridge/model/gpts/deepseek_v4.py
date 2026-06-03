@@ -47,7 +47,7 @@ def _patch_YarnRotaryEmbedding(config):
     }
     added = []
     for attr, value in defaults.items():
-        if not hasattr(config, attr):
+        if getattr(config, attr, None) is None:
             setattr(config, attr, value)
             added.append(attr)
     try:
