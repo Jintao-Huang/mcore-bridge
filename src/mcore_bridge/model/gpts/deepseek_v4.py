@@ -1,6 +1,7 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import copy
 import torch
+from contextlib import contextmanager
 from megatron.core import tensor_parallel
 from megatron.core.models.common.embeddings import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
@@ -28,13 +29,34 @@ except ImportError:
     off_interface = None
 
 
+@contextmanager
+def _patch_YarnRotaryEmbedding(config):
+    defaults = {
+        'beta_fast': 32.0,
+        'beta_slow': 1.0,
+        'mscale': 1.0,
+        'mscale_all_dim': 0.0,
+    }
+    added = []
+    for attr, value in defaults.items():
+        if not hasattr(config, attr):
+            setattr(config, attr, value)
+            added.append(attr)
+    try:
+        yield config
+    finally:
+        for attr in added:
+            delattr(config, attr)
+
+
 class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
 
     def __init__(self, config, *args, **kwargs):
         assert McoreDSv4HybridSelfAttention is not object, (
             'Please install the Megatron-Core dev branch: '
             '`pip install git+https://github.com/NVIDIA/Megatron-LM@dev`')
-        super().__init__(config, *args, **kwargs)
+        with _patch_YarnRotaryEmbedding(config):
+            super().__init__(config, *args, **kwargs)
         self.layer_type = self.config.hf_config.layer_types[self.layer_number - 1]
         self.rope_layer_type = 'main' if self.layer_type == 'sliding_attention' else 'compress'
 
