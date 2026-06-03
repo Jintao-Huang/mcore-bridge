@@ -39,6 +39,7 @@ def _patch_YarnRotaryEmbedding(config):
     YarnRotaryEmbedding module will be deleted later anyway).
     """
     defaults = {
+        'original_max_position_embeddings': 4096,
         'beta_fast': 32.0,
         'beta_slow': 1.0,
         'mscale': 1.0,
