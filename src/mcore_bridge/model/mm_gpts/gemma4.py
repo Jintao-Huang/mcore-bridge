@@ -291,10 +291,10 @@ class Gemma4SelfAttention(SelfAttention):
         packed_seq_params = kwargs.get('packed_seq_params')
         attention_bias = kwargs.get('attention_bias')
         mixed_qkv, _ = self.linear_qkv(hidden_states)
-        if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
+        if getattr(self, 'world_size', None) is not None and self.num_key_value_heads < self.world_size:
             mixed_qkv = all_gather_last_dim_from_tensor_parallel_region(mixed_qkv)
-            idx = get_tensor_model_parallel_rank() // (self.world_size // self.config.num_query_groups)
-            size = mixed_qkv.size()[-1] // self.config.num_query_groups
+            idx = get_tensor_model_parallel_rank() // (self.world_size // self.num_key_value_heads)
+            size = mixed_qkv.size()[-1] // self.num_key_value_heads
             mixed_qkv = mixed_qkv[:, :, idx * size:(idx + 1) * size]
 
         thd_format = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
@@ -327,9 +327,9 @@ class Gemma4SelfAttention(SelfAttention):
                 value = value.squeeze(1)
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
-        if getattr(self, 'world_size', None) is not None and self.config.num_query_groups < self.world_size:
-            idx = get_tensor_model_parallel_rank() % (self.world_size // self.config.num_query_groups)
-            size = query.shape[2] // (self.world_size // self.config.num_query_groups)
+        if getattr(self, 'world_size', None) is not None and self.num_key_value_heads < self.world_size:
+            idx = get_tensor_model_parallel_rank() % (self.world_size // self.num_key_value_heads)
+            size = query.shape[2] // (self.world_size // self.num_key_value_heads)
             query = query[:, :, idx * size:(idx + 1) * size, :]
         query = self.q_layernorm(query)
         if isinstance(rotary_pos_emb, torch.Tensor):
