@@ -74,20 +74,17 @@ class Gemma4Vit(HuggingFaceVit):
         self.embed_audio = (
             Gemma4MultimodalEmbedder(hf_config.audio_config, hf_config.text_config).to(dtype)
             if hf_config.audio_config is not None else None)
-        self.register_buffer('embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(dtype), persistent=False)
+        self.prepare_language_model(hf_config)
         self.model_cls = Gemma4Model
 
-    def get_inputs_embeds(self, inputs_embeds, **kwargs):
-        input_ids = kwargs.get('input_ids')
-        inputs_embeds = inputs_embeds * self.embed_scale.to(inputs_embeds.dtype)
+    def prepare_language_model(self, hf_config: PretrainedConfig):
+        self.register_buffer(
+            'embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(hf_config.torch_dtype), persistent=False)
 
+    def get_inputs_embeds_language_model(self, inputs_embeds, **kwargs):
+        input_ids = kwargs.get('input_ids')
         hf_config = self.hf_config
-        pixel_values = kwargs.get('pixel_values')
-        pixel_values_videos = kwargs.get('pixel_values_videos')
-        input_features = kwargs.get('input_features')
-        input_features_mask = kwargs.get('input_features_mask')
-        image_position_ids = kwargs.get('image_position_ids')
-        video_position_ids = kwargs.get('video_position_ids')
+        inputs_embeds = inputs_embeds * self.embed_scale.to(inputs_embeds.dtype)
 
         image_mask = input_ids == hf_config.image_token_id
         video_mask = input_ids == hf_config.video_token_id
@@ -95,6 +92,25 @@ class Gemma4Vit(HuggingFaceVit):
         multimodal_mask = image_mask | video_mask | audio_mask
         llm_input_ids = input_ids.clone()
         llm_input_ids[multimodal_mask] = hf_config.text_config.pad_token_id
+        return {'inputs_embeds': inputs_embeds, 'llm_input_ids': llm_input_ids}
+
+    def get_inputs_embeds(self, inputs_embeds, **kwargs):
+        hf_config = self.hf_config
+        inputs_embeds = get_inputs_embeds_language_model(inputs_embeds, **kwargs)
+        input_ids = kwargs.get('input_ids')
+        image_mask = input_ids == hf_config.image_token_id
+        video_mask = input_ids == hf_config.video_token_id
+        audio_mask = input_ids == hf_config.audio_token_id
+
+        pixel_values = kwargs.get('pixel_values')
+        pixel_values_videos = kwargs.get('pixel_values_videos')
+        input_features = kwargs.get('input_features')
+        input_features_mask = kwargs.get('input_features_mask')
+        image_position_ids = kwargs.get('image_position_ids')
+        video_position_ids = kwargs.get('video_position_ids')
+
+        res = self.get_inputs_embeds_language_model(inputs_embeds, **kwargs)
+        inputs_embeds = res['inputs_embeds']
 
         if pixel_values is not None:
             with self.patch_hf_config():
@@ -121,7 +137,8 @@ class Gemma4Vit(HuggingFaceVit):
             audio_features = audio_features.to(inputs_embeds.device, inputs_embeds.dtype)
             audio_mask_e = audio_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask_e, audio_features)
-        return {'inputs_embeds': inputs_embeds, 'llm_input_ids': llm_input_ids}
+        res['inputs_embeds'] = inputs_embeds
+        return res
 
 
 class Gemma4SelfAttention(SelfAttention):
@@ -878,7 +895,7 @@ class Gemma4UnifiedVit(Gemma4Vit):
         self.embed_audio = (
             Gemma4UnifiedMultimodalEmbedder(hf_config.audio_config, hf_config.text_config).to(dtype)
             if hf_config.audio_config is not None else None)
-        self.register_buffer('embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(dtype), persistent=False)
+        self.prepare_language_model(hf_config)
         self.model_cls = Gemma4UnifiedModel
 
 

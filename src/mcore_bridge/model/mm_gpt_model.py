@@ -32,7 +32,7 @@ class MultimodalGPTModel(MegatronModule):
         self.share_embeddings_and_output_weights = self.language_model.share_embeddings_and_output_weights
         self.model_meta = config.model_meta
         self.visual = None
-        if pre_process and self.model_meta.visual_cls is not None and not config.language_model_only:
+        if pre_process and self.model_meta.visual_cls is not None:
             self.visual = self.model_meta.visual_cls(config)
 
     @contextmanager
@@ -48,12 +48,15 @@ class MultimodalGPTModel(MegatronModule):
             packed_seq_params = kwargs.get('packed_seq_params')
             if self.visual is not None:
                 res = self.visual.get_inputs_embeds(res, **kwargs)
-                kwargs.clear()
-                if isinstance(res, dict):
-                    # compat dict
-                    inputs_embeds = res.pop('inputs_embeds')
-                    kwargs.update(res)
-                    res = inputs_embeds
+            else:
+                assert self.config.language_model_only
+                res = self.visual.get_inputs_embeds_language_model(res, **kwargs)
+            kwargs.clear()
+            if isinstance(res, dict):
+                # compat dict
+                inputs_embeds = res.pop('inputs_embeds')
+                kwargs.update(res)
+                res = inputs_embeds
             if self.config.context_parallel_size > 1:
                 res = split_cp_inputs(res, getattr(packed_seq_params, 'cu_seqlens_q', None), 1)
             if reduce_scatter_embeddings:
@@ -82,7 +85,7 @@ class MultimodalGPTModel(MegatronModule):
         extra_kwargs = {k: kwargs[k] for k in self.language_model.extra_forward_keys}
         if decoder_input is not None:
             pass
-        elif self.pre_process and not self.config.language_model_only:
+        elif self.pre_process:
             kwargs.update({'input_ids': input_ids, 'packed_seq_params': packed_seq_params})
             with self._patch_word_embeddings(kwargs):
                 decoder_input = self.language_model.embedding(input_ids=input_ids, position_ids=position_ids)
