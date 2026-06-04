@@ -82,17 +82,8 @@ class Gemma4Vit(HuggingFaceVit):
             'embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(hf_config.torch_dtype), persistent=False)
 
     def get_inputs_embeds_language_model(self, inputs_embeds, **kwargs):
-        input_ids = kwargs.get('input_ids')
-        hf_config = self.hf_config
         inputs_embeds = inputs_embeds * self.embed_scale.to(inputs_embeds.dtype)
-
-        image_mask = input_ids == hf_config.image_token_id
-        video_mask = input_ids == hf_config.video_token_id
-        audio_mask = input_ids == hf_config.audio_token_id
-        multimodal_mask = image_mask | video_mask | audio_mask
-        llm_input_ids = input_ids.clone()
-        llm_input_ids[multimodal_mask] = hf_config.text_config.pad_token_id
-        return {'inputs_embeds': inputs_embeds, 'llm_input_ids': llm_input_ids}
+        return {'inputs_embeds': inputs_embeds, 'llm_input_ids': kwargs.get('input_ids')}
 
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
         hf_config = self.hf_config
