@@ -97,10 +97,6 @@ class Gemma4Vit(HuggingFaceVit):
     def get_inputs_embeds(self, inputs_embeds, **kwargs):
         hf_config = self.hf_config
         res = self.get_inputs_embeds_language_model(inputs_embeds, **kwargs)
-        input_ids = kwargs.get('input_ids')
-        image_mask = input_ids == hf_config.image_token_id
-        video_mask = input_ids == hf_config.video_token_id
-        audio_mask = input_ids == hf_config.audio_token_id
 
         pixel_values = kwargs.get('pixel_values')
         pixel_values_videos = kwargs.get('pixel_values_videos')
@@ -108,6 +104,14 @@ class Gemma4Vit(HuggingFaceVit):
         input_features_mask = kwargs.get('input_features_mask')
         image_position_ids = kwargs.get('image_position_ids')
         video_position_ids = kwargs.get('video_position_ids')
+
+        input_ids = kwargs.get('input_ids')
+        image_mask = input_ids == hf_config.image_token_id
+        video_mask = input_ids == hf_config.video_token_id
+        audio_mask = input_ids == hf_config.audio_token_id
+        multimodal_mask = image_mask | video_mask | audio_mask
+        llm_input_ids = input_ids.clone()
+        llm_input_ids[multimodal_mask] = hf_config.text_config.pad_token_id
 
         inputs_embeds = res['inputs_embeds']
 
