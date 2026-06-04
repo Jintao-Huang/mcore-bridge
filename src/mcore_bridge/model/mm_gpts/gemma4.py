@@ -132,6 +132,7 @@ class Gemma4Vit(HuggingFaceVit):
             audio_mask_e = audio_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask_e, audio_features)
         res['inputs_embeds'] = inputs_embeds
+        res['llm_input_ids'] = input_ids
         return res
 
 
