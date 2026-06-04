@@ -51,12 +51,12 @@ class MultimodalGPTModel(MegatronModule):
                     res = self.visual.get_inputs_embeds_language_model(res, **kwargs)
                 else:
                     res = self.visual.get_inputs_embeds(res, **kwargs)
-            kwargs.clear()
-            if isinstance(res, dict):
-                # compat dict
-                inputs_embeds = res.pop('inputs_embeds')
-                kwargs.update(res)
-                res = inputs_embeds
+                kwargs.clear()
+                if isinstance(res, dict):
+                    # compat dict
+                    inputs_embeds = res.pop('inputs_embeds')
+                    kwargs.update(res)
+                    res = inputs_embeds
             if self.config.context_parallel_size > 1:
                 res = split_cp_inputs(res, getattr(packed_seq_params, 'cu_seqlens_q', None), 1)
             if reduce_scatter_embeddings:
