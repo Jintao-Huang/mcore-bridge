@@ -166,7 +166,7 @@ class Gemma4SelfAttention(SelfAttention):
         orig_k_layernorm = submodules.k_layernorm
         config.kv_channels = self.head_dim
         config.num_query_groups = self.num_key_value_heads
-        if self.is_sliding and config.window_size is None:
+        if text_config.use_bidirectional_attention == 'vision':
             kwargs['attn_mask_type'] = AttnMaskType.arbitrary
         if self.is_kv_shared_layer:
             submodules.k_layernorm = IdentityOp
@@ -609,23 +609,23 @@ class Gemma4TextGPTModel(GPTModel):
         extra_block_kwargs['shared_kv_states'] = shared_kv_states
         kwargs['extra_block_kwargs'] = extra_block_kwargs
         attention_mask = kwargs.get('attention_mask')
-        kwargs['attention_mask'] = {'sliding_attention': attention_mask, 'full_attention': attention_mask}
+        full_attention = sliding_attention = attention_mask
         if self.text_config.use_bidirectional_attention == 'vision':
-            kwargs['attention_mask']['sliding_attention'] = self._create_sliding_attention_mask(
-                attention_mask, mm_token_type_ids)
+            sliding_attention = self._create_attention_mask(sliding_attention, mm_token_type_ids, is_sliding=True)
+            full_attention = self._create_attention_mask(full_attention, mm_token_type_ids, is_sliding=False)
+        kwargs['attention_mask'] = {'sliding_attention': sliding_attention, 'full_attention': full_attention}
         hidden_states = super().forward(*args, **kwargs)
         if self.hidden_size_per_layer_input and not self.post_process:
             hidden_states = self._pack_pp_output(hidden_states, per_layer_inputs, shared_kv_states)
         return hidden_states
 
-    def _create_sliding_attention_mask(self, attention_mask, mm_token_type_ids):
-        window_size = self.text_config.sliding_window - 1
-        seq_len = attention_mask.shape[-1]
-
-        window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=attention_mask.device)
-        window_mask = ~torch.triu(window_mask, diagonal=-window_size)
-
-        attention_mask = attention_mask | window_mask
+    def _create_attention_mask(self, attention_mask, mm_token_type_ids, is_sliding: bool):
+        if is_sliding:
+            window_size = self.text_config.sliding_window - 1
+            seq_len = attention_mask.shape[-1]
+            window_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=attention_mask.device)
+            window_mask = ~torch.triu(window_mask, diagonal=-window_size)
+            attention_mask = attention_mask | window_mask
         if mm_token_type_ids is not None:
             is_vision = mm_token_type_ids > 0
             is_prev_vision = torch.roll(is_vision, shifts=1, dims=-1)
@@ -857,6 +857,11 @@ register_model(
 
 
 class Gemma4UnifiedVit(Gemma4Vit):
+    module_mapping = {
+        'model.embed_vision': 'embed_vision',
+        'model.embed_audio': 'embed_audio',
+    }
+    _vision_tower = []
 
     def prepare_model(self, hf_config: PretrainedConfig):
         from transformers.models.gemma4_unified.modeling_gemma4_unified import (Gemma4UnifiedModel,
@@ -881,11 +886,11 @@ class Gemma4UnifiedBridge(Gemma4Bridge):
         new_state_dict = {}
         if to_mcore:
             for k, v in res.items():
-                if k.startswith('model.vision_embedder.'):
-                    new_state_dict['model.embed_vision.' + k[len('model.vision_embedder.'):]] = v
-                elif k.startswith('model.embed_vision.embedding_projection.'):
+                if k.startswith('model.embed_vision.embedding_projection.'):
                     new_state_dict['model.embed_vision.multimodal_embedder.embedding_projection.'
                                    + k[len('model.embed_vision.embedding_projection.'):]] = v
+                elif k.startswith('model.vision_embedder.'):
+                    new_state_dict['model.embed_vision.' + k[len('model.vision_embedder.'):]] = v
                 else:
                     new_state_dict[k] = v
         else:
