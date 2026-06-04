@@ -391,7 +391,7 @@ class DeepseekV4Bridge(GPTBridge):
                     k = k[:-len('.scale')] + '.weight_scale_inv'
                 new_res[k] = v
             res = new_res
-        elif not to_mcore:
+        else:
             res = self._remove_prefix(res, 'model.')
             new_res = {}
             for k, v in res.items():

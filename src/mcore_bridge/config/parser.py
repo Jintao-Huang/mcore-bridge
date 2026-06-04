@@ -190,7 +190,7 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         n_shared_experts = res.pop('n_shared_experts')
     elif llm_model_type in {'ernie4_5', 'ernie4_5_moe', 'glm4'}:
         res['rotary_interleaved'] = True
-    elif hf_model_type in {'gemma4'}:
+    elif hf_model_type in {'gemma4', 'gemma4_unified'}:
         res['qk_layernorm'] = True
         res['window_size'] = f'{window_size - 1},0'
         window_attn_skip_freq = ','.join(['1' if lt == 'sliding_attention' else '0' for lt in layer_types])
