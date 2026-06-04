@@ -303,7 +303,8 @@ class ModelConfig(TransformerConfig):
         if self.add_bias_linear:
             self.add_qkv_bias = True
         self.actual_vocab_size = self.padded_vocab_size
-        self.batch_p2p_comm = not self.overlap_p2p_comm
+        if self.overlap_p2p_comm:
+            self.batch_p2p_comm = False
         if self.swiglu:
             self.activation_func = F.silu
             self.gated_linear_unit = True
