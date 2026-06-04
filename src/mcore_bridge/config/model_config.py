@@ -222,6 +222,7 @@ class ModelConfig(TransformerConfig):
     mtp_shared_weights: bool = False
 
     # visual
+    language_model_only: bool = False
     hf_config: Optional[PretrainedConfig] = None
     vit_attn_impl: Optional[str] = None  # e.g. 'flash_attention_2'
 
@@ -343,7 +344,7 @@ class ModelConfig(TransformerConfig):
             self.mcore_model_type = get_mcore_model_type(self.hf_model_type)
         self.model_meta = get_model_meta(self.mcore_model_type)
         self.is_multimodal = self.model_meta.visual_cls is not None
-        if self.is_multimodal:
+        if self.is_multimodal and not self.language_model_only:
             self.test_mm_type = getattr(self.model_meta.visual_cls, 'test_mm_type', 'image')
         else:
             self.test_mm_type = 'text'

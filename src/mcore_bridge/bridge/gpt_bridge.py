@@ -1677,7 +1677,7 @@ class GPTBridge:
         else:
             hf_state_dict = {}
         self._set_word_embeddings(mg_model, hf_state_dict, to_mcore)
-        if self.is_multimodal:
+        if self.is_multimodal and not self.config.language_model_only:
             for prefix, mg_prefix in self.module_mapping.items():
                 mg_module = deep_getattr(mg_model, f'visual.{mg_prefix}')
                 hf_state_dict.update(self._set_module(mg_module, hf_state_dict, f'{hf_prefix}{prefix}.', to_mcore))

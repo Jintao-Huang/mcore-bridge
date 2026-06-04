@@ -32,7 +32,7 @@ class MultimodalGPTModel(MegatronModule):
         self.share_embeddings_and_output_weights = self.language_model.share_embeddings_and_output_weights
         self.model_meta = config.model_meta
         self.visual = None
-        if pre_process and self.model_meta.visual_cls is not None:
+        if pre_process and self.model_meta.visual_cls is not None and not config.language_model_only:
             self.visual = self.model_meta.visual_cls(config)
 
     @contextmanager
@@ -82,7 +82,7 @@ class MultimodalGPTModel(MegatronModule):
         extra_kwargs = {k: kwargs[k] for k in self.language_model.extra_forward_keys}
         if decoder_input is not None:
             pass
-        elif self.pre_process:
+        elif self.pre_process and not self.config.language_model_only:
             kwargs.update({'input_ids': input_ids, 'packed_seq_params': packed_seq_params})
             with self._patch_word_embeddings(kwargs):
                 decoder_input = self.language_model.embedding(input_ids=input_ids, position_ids=position_ids)
