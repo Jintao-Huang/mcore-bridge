@@ -854,3 +854,57 @@ register_model(
         visual_cls=Gemma4Vit,
         loader=Gemma4Loader,
     ))
+
+
+class Gemma4UnifiedVit(Gemma4Vit):
+
+    def prepare_model(self, hf_config: PretrainedConfig):
+        from transformers.models.gemma4_unified.modeling_gemma4_unified import (Gemma4UnifiedModel,
+                                                                                Gemma4UnifiedMultimodalEmbedder,
+                                                                                Gemma4UnifiedVisionEmbedder)
+        dtype = hf_config.torch_dtype
+        self.embed_vision = (
+            Gemma4UnifiedVisionEmbedder(hf_config.vision_config, hf_config.text_config).to(dtype)
+            if hf_config.vision_config is not None else None)
+
+        self.embed_audio = (
+            Gemma4UnifiedMultimodalEmbedder(hf_config.audio_config, hf_config.text_config).to(dtype)
+            if hf_config.audio_config is not None else None)
+        self.register_buffer('embed_scale', torch.tensor(hf_config.hidden_size**0.5).to(dtype), persistent=False)
+        self.model_cls = Gemma4UnifiedModel
+
+
+class Gemma4UnifiedBridge(Gemma4Bridge):
+
+    def _convert_hf_state_dict(self, hf_state_dict, to_mcore):
+        res = super()._convert_hf_state_dict(hf_state_dict, to_mcore)
+        new_state_dict = {}
+        if to_mcore:
+            for k, v in res.items():
+                if k.startswith('model.vision_embedder.'):
+                    new_state_dict['model.embed_vision.' + k[len('model.vision_embedder.'):]] = v
+                elif k.startswith('model.embed_vision.embedding_projection.'):
+                    new_state_dict['model.embed_vision.multimodal_embedder.embedding_projection.'
+                                   + k[len('model.embed_vision.embedding_projection.'):]] = v
+                else:
+                    new_state_dict[k] = v
+        else:
+            for k, v in res.items():
+                if k.startswith('model.embed_vision.multimodal_embedder.'):
+                    new_state_dict['model.embed_vision.' + k[len('model.embed_vision.multimodal_embedder.'):]] = v
+                elif k.startswith('model.embed_vision.'):
+                    new_state_dict['model.vision_embedder.' + k[len('model.embed_vision.'):]] = v
+                else:
+                    new_state_dict[k] = v
+        res = new_state_dict
+        return res
+
+
+register_model(
+    ModelMeta(
+        ModelType.gemma4_unified,
+        ['gemma4_unified'],
+        bridge_cls=Gemma4UnifiedBridge,
+        visual_cls=Gemma4UnifiedVit,
+        loader=Gemma4Loader,
+    ))
