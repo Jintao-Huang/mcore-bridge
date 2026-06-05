@@ -1179,7 +1179,7 @@ class GPTBridge:
                         weight_list = []
                         start_idx = ep_rank * num_local_experts
                         for i in range(num_local_experts):
-                            if f'{start_idx + i}.gate_proj.weight_packed' in hf_state_dict:
+                            if f'{start_idx + i}.down_proj.weight_packed' in hf_state_dict:
                                 weight_packed = hf_state_dict[f'{start_idx + i}.down_proj.weight_packed'].load()
                                 weight_scale = hf_state_dict[f'{start_idx + i}.down_proj.weight_scale'].load()
                                 weight_shape = hf_state_dict[f'{start_idx + i}.down_proj.weight_shape'].load()
