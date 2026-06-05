@@ -97,7 +97,7 @@ class KimiK25Vit(HuggingFaceVit):
                 image_features = self.mm_projector(image_features)
             image_features = torch.cat(image_features, dim=0)
             inputs_embeds = inputs_embeds.to(image_features.dtype)
-            image_mask = (input_ids == 163605).unsqueeze(-1).expand_as(inputs_embeds)
+            image_mask = (input_ids == self.config.hf_config.media_placeholder_token_id).unsqueeze(-1).expand_as(inputs_embeds)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_features)
         return inputs_embeds
 
