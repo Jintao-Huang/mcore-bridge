@@ -83,7 +83,7 @@ class GPTBridge:
         self.mxfp4_quantizer = MxFp4Dequantizer()
         quantization_config = getattr(self.config.hf_config, 'quantization_config', None)
         self.packed_quantizer = None
-        if quantization_config['quant_method'] == 'compressed-tensors':
+        if quantization_config and quantization_config.get('quant_method') == 'compressed-tensors':
             self.packed_quantizer = PackedDequantizer(quantization_config)
 
         dp_size = dist.get_world_size() // self.etp_size // self.ep_size // self.pp_size
