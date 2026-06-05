@@ -81,8 +81,9 @@ class KimiK25Vit(HuggingFaceVit):
         assert hf_config.vision_config.mm_projector_type == 'patchmerger'
         vit_config = VisionTowerConfig(hf_config.vision_config)
         proj_config = ProjectorConfig(hf_config.vision_config)
+        vit_config.torch_dtype = hf_config.torch_dtype
         self.vision_tower = MoonViT3dPretrainedModel._from_config(vit_config)
-        self.mm_projector = PatchMergerMLP(proj_config).to(self.vision_tower.dtype)
+        self.mm_projector = PatchMergerMLP(proj_config).to(hf_config.torch_dtype)
         self.model_cls = get_class_from_dynamic_module('modeling_kimi_k25.KimiK25ForConditionalGeneration',
                                                        hf_config.name_or_path)
 
