@@ -227,7 +227,7 @@ def _patch_mrope():
         mla_rotary_interleaved: Optional[bool] = None,
         **kwargs,
     ):
-        if has_mla_rotary_interleaved:
+        if has_mla_rotary_interleaved or mla_rotary_interleaved is not None:
             kwargs['mla_rotary_interleaved'] = mla_rotary_interleaved
         return origin_apply_rotary_pos_emb(
             t, freqs, config, cu_seqlens=cu_seqlens, mscale=mscale, cp_group=cp_group, **kwargs)

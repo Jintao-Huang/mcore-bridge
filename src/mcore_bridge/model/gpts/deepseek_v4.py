@@ -3,7 +3,7 @@ import copy
 import torch
 from contextlib import contextmanager
 from megatron.core import tensor_parallel
-from megatron.core.models.common.embeddings import apply_rotary_pos_emb
+from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from typing import Optional
 
