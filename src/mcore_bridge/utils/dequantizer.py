@@ -77,3 +77,7 @@ def fp4_to_fp8(packed: torch.Tensor) -> torch.Tensor:
     unpacked = unpacked.reshape(*packed.shape[:-1], 2 * packed.shape[-1])
 
     return unpacked.to(torch.float8_e4m3fn)
+
+
+class PackedQuantizationCompressor:
+    pass
