@@ -93,7 +93,7 @@ class KimiK25Vit(HuggingFaceVit):
 
         if pixel_values is not None and pixel_values.size(0) > 0:
             pixel_values = pixel_values.to(self.vision_tower.dtype)
-            image_features: torch.Tensor = self._extract_image_features(pixel_values, kwargs['grid_thws'])
+            image_features = self._extract_image_features(pixel_values, kwargs['grid_thws'])
             if self.mm_projector:
                 image_features = self.mm_projector(image_features)
             image_features = torch.cat(image_features, dim=0)
