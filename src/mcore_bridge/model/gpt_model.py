@@ -352,6 +352,31 @@ class GPTModel(McoreGPTModel):
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         return self.output_layer(hidden_states, *args, **kwargs)[0]
 
+    def _init_reranker_cache(self, weight):
+        """One-time initialization of generative reranker constants."""
+        positive_token = os.environ.get('GENERATIVE_RERANKER_POSITIVE_TOKEN', 'yes')
+        negative_token = os.environ.get('GENERATIVE_RERANKER_NEGATIVE_TOKEN', 'no')
+        positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
+        negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
+
+        token_ids = torch.tensor([positive_token_id, negative_token_id], dtype=torch.long)
+        self._reranker_tp_size = parallel_state.get_tensor_model_parallel_world_size()
+
+        if self._reranker_tp_size > 1:
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
+            vocab_per_partition = weight.shape[0]
+            vocab_start = tp_rank * vocab_per_partition
+
+            # Compute local indices; clamp remote tokens to 0 (masked out later)
+            local_indices = token_ids - vocab_start
+            mask = ((local_indices >= 0) & (local_indices < vocab_per_partition)).float().unsqueeze(-1)
+            local_indices = local_indices.clamp(0, vocab_per_partition - 1)
+
+            self.register_buffer('_reranker_local_indices', local_indices, persistent=False)
+            self.register_buffer('_reranker_mask', mask, persistent=False)  # [2, 1]
+        else:
+            self.register_buffer('_reranker_token_ids', token_ids, persistent=False)
+
     def _forward_generative_reranker(self, hidden_states, output_weight):
         """Compute reranker score by only calculating logits for positive/negative tokens.
 
@@ -362,19 +387,12 @@ class GPTModel(McoreGPTModel):
         Returns:
             Tensor of shape [s, b, 1]: positive_logit - negative_logit.
         """
-        positive_token = os.environ.get('GENERATIVE_RERANKER_POSITIVE_TOKEN', 'yes')
-        negative_token = os.environ.get('GENERATIVE_RERANKER_NEGATIVE_TOKEN', 'no')
-        positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
-        negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
-
         weight = output_weight if output_weight is not None else self.output_layer.weight
-        tp_size = parallel_state.get_tensor_model_parallel_world_size()
 
-        if tp_size > 1:
-            tp_rank = parallel_state.get_tensor_model_parallel_rank()
-            vocab_per_partition = weight.shape[0]
-            vocab_start = tp_rank * vocab_per_partition
+        if not hasattr(self, '_reranker_tp_size'):
+            self._init_reranker_cache(weight)
 
+        if self._reranker_tp_size > 1:
             if self.config.sequence_parallel:
                 # fwd: all-gather seq dim [s/tp, b, h] → [s, b, h]
                 # bwd: reduce-scatter [s, b, h] → [s/tp, b, h] (sums grad across TP ranks)
@@ -383,27 +401,16 @@ class GPTModel(McoreGPTModel):
                 # fwd: identity; bwd: all-reduce (sums grad across TP ranks)
                 hidden_states_parallel = copy_to_tensor_model_parallel_region(hidden_states)
 
-            # Compute logits with proper autograd connection to weight
-            logit_parts = []
-            for tid in [positive_token_id, negative_token_id]:
-                local_idx = tid - vocab_start
-                if 0 <= local_idx < vocab_per_partition:
-                    # F.linear maintains autograd to both hidden_states_parallel and weight
-                    logit_parts.append(F.linear(hidden_states_parallel, weight[local_idx:local_idx + 1]).squeeze(-1))
-                else:
-                    # Use F.linear with zero weight to keep hidden_states_parallel in the autograd graph.
-                    # Without this, if both tokens are absent from this rank, the backward collective
-                    # ops (all_reduce/reduce_scatter) won't fire on this rank, causing a deadlock.
-                    logit_parts.append(
-                        F.linear(hidden_states_parallel,
-                                 weight.new_zeros(1, weight.shape[1])).squeeze(-1))
-            logits = torch.stack(logit_parts, dim=-1)  # [s, b, 2]
+            # Select weight rows for target tokens; mask zeros out remote tokens.
+            # weight[indices] maintains autograd to weight; mask keeps hidden_states_parallel
+            # in the graph even when both tokens are remote (prevents backward deadlock).
+            selected_weight = weight[self._reranker_local_indices] * self._reranker_mask  # [2, h]
+            logits = F.linear(hidden_states_parallel, selected_weight)  # [s, b, 2]
 
             # reduce_from_tensor_model_parallel_region: fwd=all_reduce, bwd=identity
             logits = reduce_from_tensor_model_parallel_region(logits)
         else:
-            selected_weight = weight[[positive_token_id, negative_token_id]]  # [2, h]
-            logits = F.linear(hidden_states, selected_weight)  # [s, b, 2]
+            logits = F.linear(hidden_states, weight[self._reranker_token_ids])  # [s, b, 2]
 
         return (logits[..., 0] - logits[..., 1])[..., None]
 
