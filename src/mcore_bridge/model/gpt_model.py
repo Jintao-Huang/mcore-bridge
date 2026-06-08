@@ -375,9 +375,13 @@ class GPTModel(McoreGPTModel):
             vocab_per_partition = weight.shape[0]
             vocab_start = tp_rank * vocab_per_partition
 
-            # copy_to_tensor_model_parallel_region: fwd=identity, bwd=all_reduce
-            # Ensures hidden_states gradient is properly all-reduced across TP ranks
-            hidden_states_parallel = copy_to_tensor_model_parallel_region(hidden_states)
+            if self.config.sequence_parallel:
+                # fwd: all-gather seq dim [s/tp, b, h] → [s, b, h]
+                # bwd: reduce-scatter [s, b, h] → [s/tp, b, h] (sums grad across TP ranks)
+                hidden_states_parallel = gather_from_sequence_parallel_region(hidden_states)
+            else:
+                # fwd: identity; bwd: all-reduce (sums grad across TP ranks)
+                hidden_states_parallel = copy_to_tensor_model_parallel_region(hidden_states)
 
             # Compute logits with proper autograd connection to weight
             logit_parts = []
@@ -388,7 +392,9 @@ class GPTModel(McoreGPTModel):
                     logit_parts.append(F.linear(hidden_states_parallel, weight[local_idx:local_idx + 1]).squeeze(-1))
                 else:
                     logit_parts.append(
-                        torch.zeros(hidden_states.shape[:-1], dtype=hidden_states.dtype, device=hidden_states.device))
+                        torch.zeros(
+                            hidden_states_parallel.shape[:-1], dtype=hidden_states.dtype,
+                            device=hidden_states.device))
             logits = torch.stack(logit_parts, dim=-1)  # [s, b, 2]
 
             # reduce_from_tensor_model_parallel_region: fwd=all_reduce, bwd=identity
