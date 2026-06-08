@@ -391,10 +391,12 @@ class GPTModel(McoreGPTModel):
                     # F.linear maintains autograd to both hidden_states_parallel and weight
                     logit_parts.append(F.linear(hidden_states_parallel, weight[local_idx:local_idx + 1]).squeeze(-1))
                 else:
+                    # Use F.linear with zero weight to keep hidden_states_parallel in the autograd graph.
+                    # Without this, if both tokens are absent from this rank, the backward collective
+                    # ops (all_reduce/reduce_scatter) won't fire on this rank, causing a deadlock.
                     logit_parts.append(
-                        torch.zeros(
-                            hidden_states_parallel.shape[:-1], dtype=hidden_states.dtype,
-                            device=hidden_states.device))
+                        F.linear(hidden_states_parallel,
+                                 weight.new_zeros(1, weight.shape[1])).squeeze(-1))
             logits = torch.stack(logit_parts, dim=-1)  # [s, b, 2]
 
             # reduce_from_tensor_model_parallel_region: fwd=all_reduce, bwd=identity
