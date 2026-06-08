@@ -14,8 +14,10 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.gpt import GPTModel as McoreGPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
-                                                    gather_from_tensor_model_parallel_region)
+from megatron.core.tensor_parallel.mappings import (copy_to_tensor_model_parallel_region,
+                                                    gather_from_sequence_parallel_region,
+                                                    gather_from_tensor_model_parallel_region,
+                                                    reduce_from_tensor_model_parallel_region)
 from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
@@ -350,6 +352,53 @@ class GPTModel(McoreGPTModel):
     def _forward_output_layer(self, hidden_states, *args, **kwargs):
         return self.output_layer(hidden_states, *args, **kwargs)[0]
 
+    def _forward_generative_reranker(self, hidden_states, output_weight):
+        """Compute reranker score by only calculating logits for positive/negative tokens.
+
+        Instead of computing logits over the full vocabulary, this method selects only
+        the output weight rows for the two target tokens and performs a small matmul,
+        with proper gradient handling under Tensor Parallelism.
+
+        Returns:
+            Tensor of shape [s, b, 1]: positive_logit - negative_logit.
+        """
+        positive_token = os.environ.get('GENERATIVE_RERANKER_POSITIVE_TOKEN', 'yes')
+        negative_token = os.environ.get('GENERATIVE_RERANKER_NEGATIVE_TOKEN', 'no')
+        positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
+        negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
+
+        weight = output_weight if output_weight is not None else self.output_layer.weight
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
+
+        if tp_size > 1:
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
+            vocab_per_partition = weight.shape[0]
+            vocab_start = tp_rank * vocab_per_partition
+
+            # copy_to_tensor_model_parallel_region: fwd=identity, bwd=all_reduce
+            # Ensures hidden_states gradient is properly all-reduced across TP ranks
+            hidden_states_parallel = copy_to_tensor_model_parallel_region(hidden_states)
+
+            # Compute logits with proper autograd connection to weight
+            logit_parts = []
+            for tid in [positive_token_id, negative_token_id]:
+                local_idx = tid - vocab_start
+                if 0 <= local_idx < vocab_per_partition:
+                    # F.linear maintains autograd to both hidden_states_parallel and weight
+                    logit_parts.append(F.linear(hidden_states_parallel, weight[local_idx:local_idx + 1]).squeeze(-1))
+                else:
+                    logit_parts.append(
+                        torch.zeros(hidden_states.shape[:-1], dtype=hidden_states.dtype, device=hidden_states.device))
+            logits = torch.stack(logit_parts, dim=-1)  # [s, b, 2]
+
+            # reduce_from_tensor_model_parallel_region: fwd=all_reduce, bwd=identity
+            logits = reduce_from_tensor_model_parallel_region(logits)
+        else:
+            selected_weight = weight[[positive_token_id, negative_token_id]]  # [2, h]
+            logits = F.linear(hidden_states, selected_weight)  # [s, b, 2]
+
+        return (logits[..., 0] - logits[..., 1])[..., None]
+
     def _postprocess(self,
                      hidden_states,
                      input_ids,
@@ -483,16 +532,11 @@ class GPTModel(McoreGPTModel):
 
         if self.config.task_type == 'embedding':
             logits = F.normalize(hidden_states, p=2, dim=-1)
+        elif self.config.task_type == 'generative_reranker':
+            logits = self._forward_generative_reranker(hidden_states, output_weight)
         else:
             logits = self._forward_output_layer(
                 hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output)
-            if self.config.task_type == 'generative_reranker':
-                logits = gather_from_tensor_model_parallel_region(logits)
-                positive_token = os.environ.get('GENERATIVE_RERANKER_POSITIVE_TOKEN', 'yes')
-                negative_token = os.environ.get('GENERATIVE_RERANKER_NEGATIVE_TOKEN', 'no')
-                positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
-                negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
-                logits = (logits[..., positive_token_id] - logits[..., negative_token_id])[..., None]
         if self.config.task_type in {'seq_cls', 'embedding'
                                      } and self.config.sequence_parallel and self.config.tensor_model_parallel_size > 1:
             logits = gather_from_sequence_parallel_region(logits, tensor_parallel_output_grad=False)
