@@ -359,7 +359,7 @@ class GPTModel(McoreGPTModel):
         positive_token_id = self.tokenizer.convert_tokens_to_ids(positive_token)
         negative_token_id = self.tokenizer.convert_tokens_to_ids(negative_token)
 
-        token_ids = torch.tensor([positive_token_id, negative_token_id], dtype=torch.long)
+        token_ids = torch.tensor([positive_token_id, negative_token_id], dtype=torch.long, device=weight.device)
         self._reranker_tp_size = parallel_state.get_tensor_model_parallel_world_size()
 
         if self._reranker_tp_size > 1:
@@ -369,7 +369,7 @@ class GPTModel(McoreGPTModel):
 
             # Compute local indices; clamp remote tokens to 0 (masked out later)
             local_indices = token_ids - vocab_start
-            mask = ((local_indices >= 0) & (local_indices < vocab_per_partition)).float().unsqueeze(-1)
+            mask = ((local_indices >= 0) & (local_indices < vocab_per_partition)).unsqueeze(-1)
             local_indices = local_indices.clamp(0, vocab_per_partition - 1)
 
             self.register_buffer('_reranker_local_indices', local_indices, persistent=False)
