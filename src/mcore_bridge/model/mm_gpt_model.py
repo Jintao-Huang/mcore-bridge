@@ -83,12 +83,14 @@ class MultimodalGPTModel(MegatronModule):
         **kwargs,
     ) -> torch.Tensor:
         extra_kwargs = {k: kwargs[k] for k in self.language_model.extra_forward_keys}
+        # Compatible with legacy mcore-bridge behavior.
+        cp_size = self.config.context_parallel_size
+        if cp_size > 1 and input_ids is not None and position_ids.shape[-1] * cp_size == input_ids.shape[-1]:
+            input_ids = split_cp_inputs(input_ids, packed_seq_params, dim=1)
         if decoder_input is not None:
             pass
         elif self.pre_process:
-            input_ids_ = input_ids
-            if self.config.context_parallel_size > 1 and position_ids.shape[-1] == input_ids.shape[-1]:
-                input_ids_ = reconstruct_tensor_cp(input_ids, packed_seq_params, dim=1)
+            input_ids_ = reconstruct_tensor_cp(input_ids, packed_seq_params, dim=1)
             kwargs.update({'input_ids': input_ids_, 'packed_seq_params': packed_seq_params})
             with self._patch_word_embeddings(kwargs):
                 decoder_input = self.language_model.embedding(input_ids=input_ids_, position_ids=position_ids)

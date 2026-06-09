@@ -68,7 +68,7 @@ def split_cp_inputs(inputs: torch.Tensor, cu_seqlens: Optional[torch.Tensor], di
     return torch.cat(new_inputs, dim=dim)
 
 
-def reconstruct_tensor_cp(tensor, packed_seq_params, dim=1) -> torch.Tensor:
+def reconstruct_tensor_cp(tensor, packed_seq_params, dim: int) -> torch.Tensor:
     """In CP mode, all-gather and undo the load-balanced (zigzag) chunking
     produced by ``split_cp_inputs``, restoring the full sequence in original
     token order along ``dim``.
