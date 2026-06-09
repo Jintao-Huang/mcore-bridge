@@ -8,7 +8,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
 
 from mcore_bridge.config import ModelConfig
-from mcore_bridge.utils import split_cp_inputs
+from mcore_bridge.utils import reconstruct_tensor_cp, split_cp_inputs
 
 from .gpt_model import GPTModel
 
@@ -83,18 +83,24 @@ class MultimodalGPTModel(MegatronModule):
         **kwargs,
     ) -> torch.Tensor:
         extra_kwargs = {k: kwargs[k] for k in self.language_model.extra_forward_keys}
+        # Compatible with legacy mcore-bridge behavior.
+        cp_size = self.config.context_parallel_size
+        needs_split = cp_size > 1 and input_ids is not None and position_ids.shape[-1] * cp_size == input_ids.shape[-1]
         if decoder_input is not None:
             pass
         elif self.pre_process:
-            kwargs.update({'input_ids': input_ids, 'packed_seq_params': packed_seq_params})
+            input_ids_ = input_ids if needs_split else reconstruct_tensor_cp(input_ids, packed_seq_params, dim=1)
+            kwargs.update({'input_ids': input_ids_, 'packed_seq_params': packed_seq_params})
             with self._patch_word_embeddings(kwargs):
-                decoder_input = self.language_model.embedding(input_ids=input_ids, position_ids=position_ids)
+                decoder_input = self.language_model.embedding(input_ids=input_ids_, position_ids=position_ids)
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
             decoder_input = None
             kwargs = {}
         kwargs.update(extra_kwargs)
+        if needs_split:
+            input_ids = split_cp_inputs(input_ids, getattr(packed_seq_params, 'cu_seqlens_q', None), dim=1)
         return self.language_model(
             input_ids=input_ids,
             position_ids=position_ids,
