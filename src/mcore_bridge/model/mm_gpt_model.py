@@ -8,7 +8,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
 
 from mcore_bridge.config import ModelConfig
-from mcore_bridge.utils import split_cp_inputs
+from mcore_bridge.utils import reconstruct_tensor_cp, split_cp_inputs
 
 from .gpt_model import GPTModel
 
@@ -86,9 +86,12 @@ class MultimodalGPTModel(MegatronModule):
         if decoder_input is not None:
             pass
         elif self.pre_process:
-            kwargs.update({'input_ids': input_ids, 'packed_seq_params': packed_seq_params})
+            input_ids_ = input_ids
+            if self.config.context_parallel_size > 1 and position_ids.shape[-1] == input_ids.shape[-1]:
+                input_ids_ = reconstruct_tensor_cp(input_ids, packed_seq_params, dim=1)
+            kwargs.update({'input_ids': input_ids_, 'packed_seq_params': packed_seq_params})
             with self._patch_word_embeddings(kwargs):
-                decoder_input = self.language_model.embedding(input_ids=input_ids, position_ids=position_ids)
+                decoder_input = self.language_model.embedding(input_ids=input_ids_, position_ids=position_ids)
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
