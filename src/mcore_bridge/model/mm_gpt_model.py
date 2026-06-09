@@ -100,7 +100,7 @@ class MultimodalGPTModel(MegatronModule):
             kwargs = {}
         kwargs.update(extra_kwargs)
         if needs_split:
-            input_ids = split_cp_inputs(input_ids, packed_seq_params, dim=1)
+            input_ids = split_cp_inputs(input_ids, getattr(packed_seq_params, 'cu_seqlens_q', None), dim=1)
         return self.language_model(
             input_ids=input_ids,
             position_ids=position_ids,
