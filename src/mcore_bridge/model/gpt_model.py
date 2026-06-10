@@ -12,13 +12,14 @@ from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
+from megatron.core.models.common.language_module.language_module import LanguageModule
 from megatron.core.models.gpt import GPTModel as McoreGPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (copy_to_tensor_model_parallel_region,
                                                     gather_from_sequence_parallel_region,
-                                                    gather_from_tensor_model_parallel_region,
                                                     reduce_from_tensor_model_parallel_region)
-from megatron.core.transformer.multi_token_prediction import MTPLossAutoScaler, MTPLossLoggingHelper
+from megatron.core.transformer.multi_token_prediction import (MTPLossAutoScaler, MTPLossLoggingHelper,
+                                                              tie_word_embeddings_state_dict)
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
 from packaging import version
@@ -579,3 +580,42 @@ class GPTModel(McoreGPTModel):
 
     def get_input_tensor(self):
         return self.decoder.input_tensor
+
+    def sharded_state_dict(
+            self,
+            prefix: str = '',
+            sharded_offsets: tuple = (),
+            metadata: Optional[dict] = None,
+    ) -> ShardedStateDict:
+        """Override to support embedding-task models that have no output_layer.
+
+        ``LanguageModule.sharded_state_dict`` and ``McoreGPTModel.sharded_state_dict``
+        both assume an ``output_layer`` exists. For ``task_type == 'embedding'`` we set
+        ``self.output_layer = None``, so we bypass those output_layer-related branches
+        by calling the grandparent (``MegatronModule``) directly, while preserving the
+        MTP embedding tying behavior from ``LanguageModule``.
+        """
+        if getattr(self, 'output_layer', None) is not None:
+            return super().sharded_state_dict(prefix, sharded_offsets, metadata)
+
+        assert not sharded_offsets, 'Unexpected sharded offsets'
+        if mcore_016:
+            from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group
+            metadata = ensure_metadata_has_dp_cp_group(metadata)
+            kwargs = {'tp_group': self.tp_group, 'dp_cp_group': metadata['dp_cp_group']}
+        else:
+            kwargs = {}
+        # Skip LanguageModule.sharded_state_dict to avoid KeyError on output_layer.weight.
+        sharded_state_dict = super(LanguageModule, self).sharded_state_dict(prefix, sharded_offsets, metadata)
+
+        # Preserve MTP embedding tying behavior from LanguageModule.
+        if getattr(self, 'mtp_process', False) and not self.pre_process:
+            first_stage_word_emb_key = f'{prefix}embedding.word_embeddings.weight'
+            emb_weight = self.embedding.word_embeddings.weight
+            tie_word_embeddings_state_dict(
+                sharded_state_dict,
+                emb_weight,
+                first_stage_word_emb_key,
+                **kwargs,
+            )
+        return sharded_state_dict
