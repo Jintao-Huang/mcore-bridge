@@ -6,6 +6,23 @@ from mcore_bridge.bridge import GPTBridge
 
 from ..constant import ModelType
 from ..register import ModelMeta, register_model
+from .utils import HuggingFaceVit
+
+
+class MinimaxM3Vit(HuggingFaceVit):
+    module_mapping = {'model.vision_tower': 'vision_tower', 'model.multi_modal_projector': 'multi_modal_projector'}
+    _vision_tower = ['vision_tower']
+    _aligner = ['multi_modal_projector']
+
+    def prepare_model(self, hf_config: PretrainedConfig):
+        from transformers.models.internvl.modeling_internvl import InternVLModel, InternVLMultiModalProjector
+        self.vision_tower = AutoModel.from_config(hf_config.vision_config)
+        self.multi_modal_projector = InternVLMultiModalProjector(hf_config).to(self.vision_tower.dtype)
+        self.model_cls = InternVLModel
+        self.dtype = self.vision_tower.dtype
+
+    def get_inputs_embeds(self, inputs_embeds, **kwargs):
+        return self._hf_get_inputs_embeds(inputs_embeds, kwargs, self.visual, self.hf_config)
 
 
 class MinimaxM3Bridge(GPTBridge):
@@ -47,24 +64,23 @@ class MinimaxM3Bridge(GPTBridge):
             # Rename routed experts: w1->gate_proj, w3->up_proj, w2->down_proj
             # Shared experts already use standard naming (gate_proj/up_proj/down_proj)
             hf_state_dict = {
-                k.replace('.w1.', '.gate_proj.').replace('.w3.', '.up_proj.').replace('.w2.', '.down_proj.')
-                if 'shared_expert' not in k else k: v
+                k.replace('.w1.', '.gate_proj.').replace('.w3.', '.up_proj.').replace('.w2.', '.down_proj.') if 'shared_expert' not in k else k:
+                v
                 for k, v in hf_state_dict.items()
             }
         hf_state_dict = super()._set_moe_state(mg_mlp, hf_state_dict, hf_prefix, layer_idx, to_mcore, is_mtp)
         if not to_mcore:
             # Rename back for routed experts only
             hf_state_dict = {
-                k.replace('.gate_proj.', '.w1.').replace('.up_proj.', '.w3.').replace('.down_proj.', '.w2.')
-                if 'shared_expert' not in k else k: v
+                k.replace('.gate_proj.', '.w1.').replace('.up_proj.', '.w3.').replace('.down_proj.', '.w2.') if 'shared_expert' not in k else k:
+                v
                 for k, v in hf_state_dict.items()
             }
         return hf_state_dict
 
 
-register_model(
-    ModelMeta(
-        ModelType.minimax_m3_vl,
-        ['minimax_m3_vl'],
-        bridge_cls=MinimaxM3Bridge,
-    ))
+register_model(ModelMeta(
+    ModelType.minimax_m3_vl,
+    ['minimax_m3_vl'],
+    bridge_cls=MinimaxM3Bridge,
+))
