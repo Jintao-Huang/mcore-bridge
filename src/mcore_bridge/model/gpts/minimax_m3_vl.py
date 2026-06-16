@@ -64,7 +64,7 @@ class MinimaxM3Bridge(GPTBridge):
 
 register_model(
     ModelMeta(
-        ModelType.minimax_m3,
+        ModelType.minimax_m3_vl,
         ['minimax_m3_vl'],
         bridge_cls=MinimaxM3Bridge,
     ))
