@@ -229,6 +229,28 @@ def hf_to_mcore_config(hf_config: PretrainedConfig) -> Dict[str, Any]:
         res.setdefault('linear_attention_freq', 4)
     elif llm_model_type == 'minimax_m2':
         res['add_qkv_bias'] = False
+    elif hf_model_type == 'minimax_m3_vl':
+        text_cfg = getattr(hf_config, 'text_config', hf_config)
+        res['add_qkv_bias'] = False
+        # Fix intermediate sizes: intermediate_size is MoE expert size, dense_intermediate_size is for dense MLP
+        res['moe_ffn_hidden_size'] = res.get('ffn_hidden_size', 3072)
+        dense_intermediate_size = getattr(text_cfg, 'dense_intermediate_size', None)
+        if dense_intermediate_size:
+            res['ffn_hidden_size'] = dense_intermediate_size
+        # Shared expert intermediate size
+        shared_intermediate_size = getattr(text_cfg, 'shared_intermediate_size', None)
+        if shared_intermediate_size:
+            res['moe_shared_expert_intermediate_size'] = shared_intermediate_size
+        # moe_layer_freq from list
+        moe_layer_freq_list = getattr(text_cfg, 'moe_layer_freq', None)
+        if isinstance(moe_layer_freq_list, list):
+            res['moe_layer_freq'] = f"[{','.join(str(x) for x in moe_layer_freq_list)}]"
+        # Activation: swigluoai = quick_geglu + glu_linear_offset
+        res['swiglu'] = False
+        res['quick_geglu'] = True
+        res['glu_linear_offset'] = 1
+        # Gemma-style RMSNorm: weight is (1 + w)
+        res['layernorm_zero_centered_gamma'] = True
     elif llm_model_type == 'olmoe':
         res['qk_layernorm'] = True
     elif hf_model_type == 'llama4':
