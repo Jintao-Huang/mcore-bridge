@@ -529,7 +529,7 @@ class GPTModel(McoreGPTModel):
                     elif mcore_019:
                         # mcore >= 0.19 dev branch: save_loss_to_tracker with num_tokens
                         MTPLossLoggingHelper.save_loss_to_tracker(
-                            mtp_loss_for_log,
+                            torch.sum(mtp_loss),
                             num_tokens,
                             mtp_layer_number,
                             self.config.mtp_unroll_steps,
