@@ -510,11 +510,14 @@ class GPTModel(McoreGPTModel):
                         torch.sum(mtp_loss) / num_tokens if num_tokens > 0 else mtp_loss.new_tensor(0.0))
                     if hasattr(MTPLossLoggingHelper, 'save_metrics_to_tracker'):
                         # mcore >= 0.19 main branch: save_metrics_to_tracker with correct/total
-                        with torch.no_grad():
-                            preds = torch.argmax(mtp_logits, dim=-1)
-                            valid = loss_mask_.bool()
-                            correct = ((preds == mtp_labels) & valid).sum().float()
-                            total = valid.sum().float()
+                        from megatron.core.transformer.multi_token_prediction import _compute_mtp_acceptance_counts
+                        correct, total = _compute_mtp_acceptance_counts(
+                            mtp_logits,
+                            mtp_labels,
+                            loss_mask_,
+                            output_layer=None,
+                            runtime_gather_output=True,
+                        )
                         MTPLossLoggingHelper.save_metrics_to_tracker(
                             mtp_loss_for_log,
                             correct,
