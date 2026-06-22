@@ -12,6 +12,7 @@ from mcore_bridge.utils import Fp8Dequantizer, fp4_to_fp8
 
 from ..constant import ModelType
 from ..gpt_model import GPTModel
+from ..modules.compressor import Compressor, CSAIndexer
 from ..register import ModelLoader, ModelMeta, register_model
 from ..rope import get_rope_inv_freq
 
@@ -373,7 +374,8 @@ class DeepseekV4Loader(ModelLoader):
             if getattr(core_attention_submodules, 'compressor') is not None:
                 core_attention_submodules.compressor.module = Compressor
             if getattr(core_attention_submodules, 'indexer') is not None:
-                core_attention_submodules.compressor.indexer.module = Compressor
+                core_attention_submodules.indexer.module = CSAIndexer
+                core_attention_submodules.indexer.compressor.module = Compressor
         return transformer_layer_spec
 
 
