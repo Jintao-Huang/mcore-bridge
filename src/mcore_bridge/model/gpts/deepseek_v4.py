@@ -367,6 +367,13 @@ class DeepseekV4Loader(ModelLoader):
         transformer_layer_spec = get_transformer_block_with_experimental_attention_variant_spec(self.config, vp_stage)
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.submodules.self_attention.module = DSv4HybridSelfAttention
+        for layer_spec in transformer_layer_spec.layer_specs:
+            self._set_mlp_spec(layer_spec.submodules, DSv4HybridMLP)
+            core_attention_submodules = layer_spec.submodules.self_attention.submodules.core_attention.submodules
+            if getattr(core_attention_submodules, 'compressor') is not None:
+                core_attention_submodules.compressor.module = Compressor
+            if getattr(core_attention_submodules, 'indexer') is not None:
+                core_attention_submodules.compressor.indexer.module = Compressor
         return transformer_layer_spec
 
 
