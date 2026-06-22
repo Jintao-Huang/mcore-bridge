@@ -1,7 +1,9 @@
 import torch
+import transformer_engine
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
+from megatron.core.transformer.spec_utils import build_module
 from typing import Optional, Tuple
 
 try:
@@ -11,6 +13,22 @@ except ImportError:
 
 
 class DSAIndexer(McoreDSAIndexer):
+
+    def __init__(self, config, submodules, *args, **kwargs):
+        super().__init__(config, submodules, *args, **kwargs)
+        if getattr(config, 'fp8_param', False):
+            with transformer_engine.pytorch.fp8_model_init(enabled=False):
+                self.linear_weights_proj = build_module(
+                    submodules.linear_weights_proj,
+                    self.hidden_size,
+                    self.index_n_heads,
+                    config=self.config,
+                    init_method=self.config.init_method,
+                    bias=False,
+                    skip_bias_add=False,
+                    skip_weight_param_allocation=False,
+                    parallel_mode='duplicated',
+                )
 
     def forward_before_topk(
         self,
