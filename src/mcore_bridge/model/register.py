@@ -98,7 +98,7 @@ class ModelLoader:
         backend = _get_backend_spec_provider(config=self.config)
         dsa_spec = get_dsa_module_spec_for_backend(self.config, backend)
         if getattr(dsa_spec.submodules.core_attention.submodules, 'indexer', None) is not None:
-            dsa_spec.submodules.core_attention.submodules.indexer = DSAIndexer
+            dsa_spec.submodules.core_attention.submodules.indexer.module = DSAIndexer
         if self.config.qk_layernorm:
             linear_q_up_proj = backend.column_parallel_linear()
             # fix megatron-core

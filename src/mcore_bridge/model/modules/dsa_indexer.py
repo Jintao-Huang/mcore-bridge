@@ -1,16 +1,14 @@
-
 import torch
-from typing import Optional
+from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
-from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
-
-from typing import Tuple
+from typing import Optional, Tuple
 
 try:
     from megatron.core.models.gpt.experimental_attention_variant_module_specs import DSAIndexer as McoreDSAIndexer
 except ImportError:
     McoreDSAIndexer = None
+
 
 class DSAIndexer(McoreDSAIndexer):
 
