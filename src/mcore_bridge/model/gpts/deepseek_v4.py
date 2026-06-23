@@ -78,6 +78,7 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
                 in_features=group_proj_in_size,
                 out_features=config.o_lora_rank,
                 bias=False,
+                params_dtype=config.params_dtype,
             )
             self._o_group_proj_is_grouped_linear = True
         else:
@@ -333,7 +334,7 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             core_attn_out = core_attn_out.permute(2, 0, 1, 3).contiguous()
             core_attn_out = core_attn_out.reshape(-1, core_attn_out.size(-1))
             m_splits = [s * b] * self.o_local_groups
-            core_attn_out, _ = self.linear_o_group_proj(core_attn_out, m_splits)
+            core_attn_out = self.linear_o_group_proj(core_attn_out, m_splits)
             # [G*s*b, R] -> [G, s, b, R] -> [s, b, G*R]
             core_attn_out = core_attn_out.view(self.o_local_groups, s, b, -1)
             core_attn_out = core_attn_out.permute(1, 2, 0, 3).contiguous()

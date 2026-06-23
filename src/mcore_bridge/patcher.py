@@ -207,6 +207,7 @@ def _patch_mrope():
             logger.warning_once('Using non-batched RoPE, which may affect performance.')
             return _origin_apply_rotary_pos_emb_thd(t, cu_seqlens, freqs, *args, **kwargs)
 
+        kwargs.pop('max_seqlen', None)  # compat megatron-lm dev branch
         return rope_utils._apply_rotary_pos_emb_bshd(t.unsqueeze(1), freqs, *args, **kwargs).squeeze(1)
 
     rope_utils._apply_rotary_pos_emb_thd = _apply_rotary_pos_emb_thd
