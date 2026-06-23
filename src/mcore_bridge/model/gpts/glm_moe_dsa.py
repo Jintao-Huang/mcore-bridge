@@ -1,5 +1,6 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
 import torch
+from contextlib import contextmanager
 from typing import Optional
 
 from ..constant import ModelType
@@ -10,7 +11,6 @@ from ..register import ModelLoader, ModelMeta, register_model
 try:
     from megatron.core.transformer.experimental_attention_variant.dsa import (DSAIndexerLossAutoScaler,
                                                                               DSAIndexerLossLoggingHelper, DSAttention,
-                                                                              DSAttentionSubmodules,
                                                                               FusedDSAIndexerLoss, unfused_dsa_fn)
 except ImportError:
     DSAttention = object
@@ -69,7 +69,9 @@ class GlmMoeDsaDSAttention(DSAttention):
         if self.skip_topk:
             # Shared layer: reuse topk_indices from previous full layer
             assert shared_topk_indices is not None and 'topk_indices' in shared_topk_indices, (
-                'Shared DSA layers require topk_indices from a previous full indexer layer.')
+                f'GLM 5.2 DSA: Layer {self.layer_number} is a "shared" indexer layer but no '
+                f'"full" layer precedes it in this PP stage. Please adjust '
+                f'`pipeline_model_parallel_layout` to ensure each PP stage starts with a "full" indexer layer.')
             topk_indices = shared_topk_indices['topk_indices']
             output = unfused_dsa_fn(query, key, value, topk_indices, self.softmax_scale)
             return output
@@ -127,22 +129,34 @@ class GlmMoeDsaGPTModel(GPTModel):
         return super().forward(*args, **kwargs)
 
 
+@contextmanager
+def _shared_topk_indices_context(layer, shared_topk_indices):
+    """Temporarily inject shared_topk_indices into the core attention module."""
+    core_attn = None
+    if shared_topk_indices is not None and hasattr(layer, 'self_attention'):
+        _attn = getattr(layer.self_attention, 'core_attention', None)
+        if isinstance(_attn, GlmMoeDsaDSAttention):
+            core_attn = _attn
+            core_attn._shared_topk_indices = shared_topk_indices
+    try:
+        yield
+    finally:
+        if core_attn is not None:
+            core_attn._shared_topk_indices = None
+
+
 class GlmMoeDsaTransformerBlock(TransformerBlock):
     """TransformerBlock that routes ``shared_topk_indices`` to DSAttention.
 
     Pops ``shared_topk_indices`` from kwargs before calling the layer
-    (so it doesn't hit ``_forward_attention``'s fixed signature), sets
-    it as an attribute on the core attention module, and restores it
-    afterward for subsequent layers.
+    (so it doesn't hit ``_forward_attention``'s fixed signature), injects
+    it via context manager, and restores it afterward for subsequent layers.
     """
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
         shared_topk_indices = kwargs.pop('shared_topk_indices', None)
-        if shared_topk_indices is not None:
-            core_attn = layer.self_attention.core_attention
-            if isinstance(core_attn, GlmMoeDsaDSAttention):
-                core_attn._shared_topk_indices = shared_topk_indices
-        result = super()._layer_forward(layer, hidden_states, **kwargs)
+        with _shared_topk_indices_context(layer, shared_topk_indices):
+            result = super()._layer_forward(layer, hidden_states, **kwargs)
         # Restore for subsequent layers
         if shared_topk_indices is not None:
             kwargs['shared_topk_indices'] = shared_topk_indices
@@ -156,9 +170,9 @@ class GlmMoeDsaLoader(ModelLoader):
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         transformer_layer_spec = super().get_transformer_layer_spec(vp_stage)
 
-        indexer_types = getattr(self.config.hf_config, 'indexer_types', None)
+        indexer_types = self.config.hf_config.indexer_types
         if indexer_types is not None:
-            for i, layer_spec in enumerate(transformer_layer_spec.layer_specs):
+            for layer_spec in transformer_layer_spec.layer_specs:
                 core_attn = layer_spec.submodules.self_attention.submodules.core_attention
                 if hasattr(core_attn, 'module') and issubclass(core_attn.module, DSAttention):
                     core_attn.module = GlmMoeDsaDSAttention
