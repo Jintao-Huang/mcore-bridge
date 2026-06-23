@@ -395,9 +395,9 @@ class DeepseekV4Loader(ModelLoader):
         for layer_spec in transformer_layer_spec.layer_specs:
             layer_spec.submodules.self_attention.module = DSv4HybridSelfAttention
             core_attention_submodules = layer_spec.submodules.self_attention.submodules.core_attention.submodules
-            if getattr(core_attention_submodules, 'compressor') is not None:
+            if getattr(core_attention_submodules, 'compressor', None) is not None:
                 core_attention_submodules.compressor.module = Compressor
-            if getattr(core_attention_submodules, 'indexer') is not None:
+            if getattr(core_attention_submodules, 'indexer', None) is not None:
                 core_attention_submodules.indexer.module = CSAIndexer
                 core_attention_submodules.indexer.submodules.compressor.module = Compressor
         return transformer_layer_spec
