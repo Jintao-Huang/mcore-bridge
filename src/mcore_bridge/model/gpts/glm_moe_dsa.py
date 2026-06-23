@@ -71,7 +71,8 @@ class GlmMoeDsaDSAttention(DSAttention):
             assert shared_topk_indices is not None and 'topk_indices' in shared_topk_indices, (
                 f'GLM 5.2 DSA: Layer {self.layer_number} is a "shared" indexer layer but no '
                 f'"full" layer precedes it in this PP stage. Please adjust '
-                f'`pipeline_model_parallel_layout` to ensure each PP stage starts with a "full" indexer layer.')
+                f'`--pipeline_model_parallel_layout` to ensure each PP stage starts with a "full" indexer layer. '
+                f'indexer_types: {self.config.hf_config.indexer_types}.')
             topk_indices = shared_topk_indices['topk_indices']
             output = unfused_dsa_fn(query, key, value, topk_indices, self.softmax_scale)
             return output
