@@ -19,16 +19,12 @@ except ImportError:
 class GlmMoeDsaDSAttention(DSAttention):
     """DSAttention with shared indexer support for GLM 5.2.
 
-    For "full" layers: computes topk_indices via the indexer and stores them
-    in ``shared_topk_indices`` for subsequent shared layers.
-    For "shared" layers: skips the indexer and reuses topk_indices from the
-    most recent "full" layer, analogous to gemma4's ``shared_kv_states``.
-
     Refer: https://arxiv.org/abs/2603.12201 for more details.
     """
 
     def __init__(self, config, submodules, layer_number, *args, **kwargs):
-        indexer_types = getattr(config.hf_config, 'indexer_types', None)
+        super().__init__(config, submodules, layer_number, *args, **kwargs)
+        indexer_types = config.hf_config.indexer_types
         self.skip_topk = False
         if indexer_types is not None:
             layer_idx = layer_number - 1
@@ -36,10 +32,7 @@ class GlmMoeDsaDSAttention(DSAttention):
                 self.skip_topk = indexer_types[layer_idx] == 'shared'
 
         if self.skip_topk:
-            # Don't create indexer for shared layers to save memory
-            submodules = DSAttentionSubmodules(indexer=None)
-
-        super().__init__(config, submodules, layer_number, *args, **kwargs)
+            self.indexer = None
 
     def _get_float_mask(self, query, key, attention_mask, x, attn_mask_type):
         """Build a FP32 mask with -inf for masked positions."""
@@ -145,8 +138,8 @@ class GlmMoeDsaTransformerBlock(TransformerBlock):
 
     def _layer_forward(self, layer, hidden_states, **kwargs):
         shared_topk_indices = kwargs.pop('shared_topk_indices', None)
-        if shared_topk_indices is not None and hasattr(layer, 'self_attention'):
-            core_attn = getattr(layer.self_attention, 'core_attention', None)
+        if shared_topk_indices is not None:
+            core_attn = layer.self_attention.core_attention
             if isinstance(core_attn, GlmMoeDsaDSAttention):
                 core_attn._shared_topk_indices = shared_topk_indices
         result = super()._layer_forward(layer, hidden_states, **kwargs)
