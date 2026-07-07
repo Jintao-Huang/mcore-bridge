@@ -148,6 +148,7 @@ The following is the list of models supported by MCore-Bridge:
 | Gemma     | gemma4, gemma4_unified                                   |
 | GLM      | glm4v, glm4v_moe |
 | Kimi     | kimi_vl, kimi_k25                                   |
+| OpenBMB  | minicpmv4_6                                       |
 | InternVL | internvl_chat, internvl                           |
 | Ovis     | ovis2_5                                                      |
 | Llama    | llama4                                                |
