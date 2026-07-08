@@ -108,9 +108,6 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
                     is None), 'dynamic_context_parallel is not supported with MLA yet and is planned for future. \
             Please disable dynamic_context_parallel.'
 
-        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
-        cp_group = self.pg_collection.cp
-        cp_size = cp_group.size()
         assert (inference_context is None
                 and inference_params is None), 'Inference is not supported for DSv4HybridSelfAttention.'
 
@@ -291,6 +288,7 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             raise ValueError('DSv4 THD CP requires a contiguous CP partition.')
 
         boundary_hidden = None
+        boundary_rotary_pos_emb = None
         if use_thd_cp:
             from megatron.core.transformer.experimental_attention_variant import csa_cp_utils as cp_utils
             boundary_hidden = cp_utils.exchange_cp_boundary_hidden(
