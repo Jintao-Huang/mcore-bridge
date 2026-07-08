@@ -133,8 +133,6 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             # In Megatron-Core, the qkv shape is [t, 1, h, d].
             # So we need to reshape qkv from [t, 1, h, d] to [t, h, d].
             q_compressed = q_compressed.squeeze(1)
-            if boundary_kv_compressed is not None:
-                boundary_kv_compressed = boundary_kv_compressed.squeeze(1)
 
         # =========================================
         # Apply norm
@@ -178,11 +176,12 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             if packed_seq and cp_size > 1:
                 from megatron.core.transformer.experimental_attention_variant import csa_cp_utils as cp_utils
                 global_start = cp_group.rank() * q.shape[0]
+                pos_dim = self.config.qk_pos_emb_head_dim
                 query = cp_utils.apply_thd_cp_local_rope_unfused(
                     q,
                     rotary_pos_emb,
-                    self.config.qk_head_dim,
-                    self.config.qk_pos_emb_head_dim,
+                    q.shape[-1] - pos_dim,
+                    pos_dim,
                     cu_seqlens_q,
                     global_start,
                     self.config,
@@ -190,8 +189,8 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
                 kv = cp_utils.apply_thd_cp_local_rope_unfused(
                     kv.unsqueeze(-2),
                     rotary_pos_emb,
-                    self.config.qk_head_dim,
-                    self.config.qk_pos_emb_head_dim,
+                    kv.size(-1) - pos_dim,
+                    pos_dim,
                     cu_seqlens_kv,
                     global_start - boundary_rows,
                     self.config,
@@ -254,36 +253,21 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             quantization = self.config.fp8 or self.config.fp4
             self.qkv_up_checkpoint = tensor_parallel.CheckpointWithoutOutput(fp8=quantization)
             if boundary_kv_compressed is None:
-                query, key, value = self.qkv_up_checkpoint.checkpoint(
-                    qkv_up_proj_and_rope_apply,
-                    q_compressed,
-                    kv_compressed,
-                    rotary_pos_emb,
-                    self.pg_collection.cp,
-                )
+                query, key, value = self.qkv_up_checkpoint.checkpoint(qkv_up_proj_and_rope_apply, q_compressed,
+                                                                      kv_compressed, rotary_pos_emb)
                 boundary_kv = None
             else:
-                query, key, value, boundary_kv = self.qkv_up_checkpoint.checkpoint(
-                    qkv_up_proj_and_rope_apply,
-                    q_compressed,
-                    kv_compressed,
-                    rotary_pos_emb,
-                    self.pg_collection.cp,
-                    boundary_kv_compressed,
-                )
+                query, key, value, boundary_kv = self.qkv_up_checkpoint.checkpoint(qkv_up_proj_and_rope_apply,
+                                                                                   q_compressed, kv_compressed,
+                                                                                   rotary_pos_emb,
+                                                                                   boundary_kv_compressed)
         else:
             if boundary_kv_compressed is None:
-                query, key, value = qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, rotary_pos_emb,
-                                                               self.pg_collection.cp)
+                query, key, value = qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, rotary_pos_emb)
                 boundary_kv = None
             else:
-                query, key, value, boundary_kv = qkv_up_proj_and_rope_apply(
-                    q_compressed,
-                    kv_compressed,
-                    rotary_pos_emb,
-                    self.pg_collection.cp,
-                    boundary_kv_compressed,
-                )
+                query, key, value, boundary_kv = qkv_up_proj_and_rope_apply(q_compressed, kv_compressed, rotary_pos_emb,
+                                                                            boundary_kv_compressed)
 
         result = (query, key, value, q_compressed, kv_compressed)
         if boundary_kv is not None:
