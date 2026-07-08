@@ -94,6 +94,7 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
         rotary_pos_emb=None,
         *,
         inference_params=None,
+        boundary_hidden=None,
     ):
         """
         Derives `query`, `key` and `value` tensors from `hidden_states`.
@@ -251,19 +252,46 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
         assert (inference_context is None
                 and inference_params is None), 'Inference is not supported for DSv4HybridAttention.'
 
+        # Select this microbatch's dynamic CP group. QKV captures it explicitly
+        # for recompute; the rest of this forward reads it from pg_collection.
+        # Restore the static group before returning.
+        cp_group = self.pg_collection.cp
+        cp_size = cp_group.size()
+        qkv_format = packed_seq_params.qkv_format if packed_seq_params is not None else None
+        if cp_size > 1 and qkv_format != 'thd':
+            raise ValueError("DSv4 Hybrid with CP requires qkv_format='thd'.")
+        use_thd_cp = cp_size > 1 and qkv_format == 'thd'
+        if use_thd_cp and packed_seq_params.cp_partition_mode != 'contiguous':
+            raise ValueError('DSv4 THD CP requires a contiguous CP partition.')
+
+        boundary_hidden = None
+        if use_thd_cp:
+            from megatron.core.transformer.experimental_attention_variant import csa_cp_utils as cp_utils
+            boundary_hidden = cp_utils.exchange_cp_boundary_hidden(
+                hidden_states,
+                self._dsv4_compress_ratio,
+                self.config.csa_window_size,
+                self.pg_collection.cp,
+            )
         # =====================
         # Query, Key, and Value
         # =====================
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
-        query, key, value, q_compressed, kv_compressed = self.get_query_key_value_tensors(
+        qkv = self.get_query_key_value_tensors(
             hidden_states,
             key_value_states,
             position_ids,
             packed_seq_params,
             rotary_pos_emb=rotary_pos_emb,
             inference_context=inference_context,
+            boundary_hidden=boundary_hidden,
         )
+        if use_thd_cp:
+            query, key, value, q_compressed, kv_compressed, boundary_kv = qkv
+        else:
+            query, key, value, q_compressed, kv_compressed = qkv
+            boundary_kv = None
 
         # TODO: Currently, TE can only accept contiguous tensors for MLA
         query = query.contiguous()
@@ -276,6 +304,10 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
         # Need corresponding TE change
         core_attn_manager = off_interface(self.offload_core_attention and self.training, query, 'core_attn')
         with core_attn_manager as query:
+            core_attn_kwargs = {}
+            if boundary_hidden is not None:
+                core_attn_kwargs['boundary_hidden'] = boundary_hidden
+                core_attn_kwargs['boundary_kv'] = boundary_kv
             core_attn_out = self.core_attention(
                 query,
                 key,
@@ -284,8 +316,12 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
                 packed_seq_params=packed_seq_params,
                 x=hidden_states,
                 qr=q_compressed,
+                **core_attn_kwargs,
             )
-        core_attn_out = core_attn_manager.group_offload(core_attn_out, forced_released_tensors=[query, key, value])
+        forced_released_tensors = [query, key, value]
+        if boundary_kv is not None:
+            forced_released_tensors.append(boundary_kv)
+        core_attn_out = core_attn_manager.group_offload(core_attn_out, forced_released_tensors=forced_released_tensors)
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
