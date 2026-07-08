@@ -45,12 +45,24 @@ def unwrap_model(models, module_instances=None):
     return unwrapped_model
 
 
-def split_cp_inputs(inputs: torch.Tensor, cu_seqlens: Optional[torch.Tensor], dim: int):
+def split_cp_inputs(inputs: torch.Tensor, cu_seqlens: Optional[torch.Tensor], dim: int,
+                    cp_partition_mode: str = 'zigzag'):
     if dim < 0:
         dim = (dim + inputs.ndim) % inputs.ndim
-    new_inputs = []
     cp_size = mpu.get_context_parallel_world_size()
     cp_rank = mpu.get_context_parallel_rank()
+    if cp_partition_mode == 'contiguous':
+        # Rank r owns the contiguous block [r * local_rows, (r + 1) * local_rows) of the
+        # flattened packed sequence. This must match the DSv4 THD CP forward, which assumes
+        # each rank holds a single contiguous slice (global_start = cp_rank * local_rows).
+        total_rows = inputs.shape[dim]
+        assert total_rows % cp_size == 0, (
+            f'Contiguous CP slicing requires dim size={total_rows} to be divisible by cp_size={cp_size}.')
+        local_rows = total_rows // cp_size
+        slices = [slice(None)] * inputs.ndim
+        slices[dim] = slice(cp_rank * local_rows, (cp_rank + 1) * local_rows)
+        return inputs[tuple(slices)].contiguous()
+    new_inputs = []
     for i in range(1 if cu_seqlens is None else (cu_seqlens.shape[0] - 1)):
         if cu_seqlens is None:
             val = inputs
