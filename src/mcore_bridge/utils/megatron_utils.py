@@ -45,7 +45,9 @@ def unwrap_model(models, module_instances=None):
     return unwrapped_model
 
 
-def split_cp_inputs(inputs: torch.Tensor, cu_seqlens: Optional[torch.Tensor], dim: int,
+def split_cp_inputs(inputs: torch.Tensor,
+                    cu_seqlens: Optional[torch.Tensor],
+                    dim: int,
                     cp_partition_mode: str = 'zigzag'):
     if dim < 0:
         dim = (dim + inputs.ndim) % inputs.ndim
