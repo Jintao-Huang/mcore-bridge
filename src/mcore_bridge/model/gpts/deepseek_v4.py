@@ -313,8 +313,12 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             cu_seqlens_kv = None
 
         content_part, rot_part = torch.split(core_attn_out, [core_attn_out.size(-1) - pos_dim, pos_dim], dim=-1)
-        rot_part = apply_rotary_pos_emb(
-            rot_part,
+        if packed_seq:
+            rot_part_in = rot_part.squeeze(1)
+        else:
+            rot_part_in = rot_part
+        rot_part_out = apply_rotary_pos_emb(
+            rot_part_in,
             rotary_pos_emb,
             self.config,
             cu_seqlens=cu_seqlens_kv,
@@ -323,6 +327,10 @@ class DSv4HybridSelfAttention(McoreDSv4HybridSelfAttention):
             inverse=True,
             mla_output_remove_interleaving=True,
         )
+        if packed_seq:
+            rot_part = rot_part_out.unsqueeze(1)
+        else:
+            rot_part = rot_part_out
         core_attn_out = torch.cat([content_part, rot_part], dim=-1)
         core_attn_out = core_attn_out.view(seq_len, core_attn_out.size(1), -1)
 
