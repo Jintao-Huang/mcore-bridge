@@ -1,6 +1,8 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
+import megatron.core
 import torch
 from contextlib import contextmanager
+from packaging import version
 from typing import Optional
 
 from ..constant import ModelType
@@ -14,6 +16,8 @@ try:
                                                                               FusedDSAIndexerLoss, unfused_dsa_fn)
 except ImportError:
     DSAttention = object
+
+mcore_019 = version.parse(megatron.core.__version__) >= version.parse('0.19.0rc0')
 
 
 class GlmMoeDsaDSAttention(DSAttention):
@@ -86,12 +90,13 @@ class GlmMoeDsaDSAttention(DSAttention):
         if self.training and torch.is_grad_enabled():
             q, k, weights = self.indexer.forward_before_topk(x, qr, packed_seq_params)
             indexer_loss_coeff = getattr(self.config, 'dsa_indexer_loss_coeff', 0.0)
-
+            kwargs = {}
+            if mcore_019:
+                kwargs['calculate_per_token_loss'] = self.config.calculate_per_token_loss
             topk_indices, indexer_loss = FusedDSAIndexerLoss.apply(
                 q, weights, k, query.detach(), key.detach(), self.softmax_scale,
                 self.indexer.index_topk, indexer_loss_coeff, float_mask,
-                getattr(self.config, 'dsa_indexer_use_sparse_loss',
-                        False), self.indexer.pg_collection, self.config.calculate_per_token_loss)
+                getattr(self.config, 'dsa_indexer_use_sparse_loss', False), self.indexer.pg_collection, **kwargs)
             if indexer_loss_coeff > 0:
                 DSAIndexerLossLoggingHelper.save_loss_to_tracker(
                     loss=indexer_loss,
