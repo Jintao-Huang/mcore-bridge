@@ -56,6 +56,8 @@ config_mapping = {
     'dsa_indexer_head_dim': ['index_head_dim'],
     'dsa_indexer_topk': ['index_topk'],
     'dsa_indexer_rotary_interleaved': ['indexer_rope_interleave'],
+    'dsa_indexer_topk_freq': ['index_topk_freq'],
+    'dsa_indexer_skip_topk_offset': ['index_skip_topk_offset'],
     # deepseek_v4
     'csa_compress_ratios': ['compress_rates'],
     'csa_compress_rotary_base': ['compress_rope_theta'],

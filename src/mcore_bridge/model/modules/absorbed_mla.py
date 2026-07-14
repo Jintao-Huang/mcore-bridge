@@ -7,6 +7,7 @@ except ImportError:
 import torch
 from megatron.core import tensor_parallel
 from megatron.core.models.common.embeddings.rope_utils import apply_rotary_pos_emb
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel.mappings import (gather_from_sequence_parallel_region,
                                                     gather_from_tensor_model_parallel_region,
                                                     scatter_to_sequence_parallel_region)
@@ -21,6 +22,7 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
         key_value_states=None,
         packed_seq_params=None,
         inference_context=None,
+        rotary_pos_emb=None,
         *,
         inference_params=None,
     ):
@@ -40,16 +42,6 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
         # =========================================
         # Prepare RoPE and seqlen related params
         # =========================================
-        rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(inference_context, None, hidden_states, self.config,
-                                                                packed_seq_params)
-
-        mscale = 1.0
-        packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
-        if self.config.rope_type == 'rope':
-            rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
-        else:
-            rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
-
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             if packed_seq_params.cu_seqlens_q_padded is not None:
                 cu_seqlens_q = packed_seq_params.cu_seqlens_q_padded
@@ -198,7 +190,6 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
                 rotary_pos_emb,
                 config=self.config,
                 cu_seqlens=cu_seqlens_q,
-                mscale=mscale,
                 cp_group=self.pg_collection.cp,
                 mla_rotary_interleaved=True,
             )
@@ -208,7 +199,6 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
                 rotary_pos_emb,
                 config=self.config,
                 cu_seqlens=cu_seqlens_kv,
-                mscale=mscale,
                 cp_group=self.pg_collection.cp,
                 mla_rotary_interleaved=True,
             )
@@ -256,7 +246,6 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
         from megatron.core.transformer.experimental_attention_variant.absorbed_mla import (
             _apply_absorbed_v_up_projection, _restore_packed_thd_batch_dim)
         """Forward pass for multi-latent attention with matrix absorption"""
-        assert rotary_pos_emb is None, 'Rotary position embeddings should not be passed into MLA.'
         assert attention_bias is None, 'Attention bias should not be passed into MLA.'
         assert (rotary_pos_cos is None and rotary_pos_sin is None), 'MLA does not support Flash Decoding'
         assert not rotary_pos_cos_sin, 'Flash-infer rope has not been tested with MLA.'
@@ -267,7 +256,11 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
         # Query, Key, and Value
         # =====================
         q_absorbed, kv_compressed, q_compressed = self.get_query_key_value_tensors(
-            hidden_states, key_value_states, packed_seq_params, inference_context=inference_context)
+            hidden_states,
+            key_value_states,
+            packed_seq_params,
+            rotary_pos_emb=rotary_pos_emb,
+            inference_context=inference_context)
 
         assert q_absorbed.is_contiguous()
         assert q_compressed.is_contiguous()
@@ -277,6 +270,11 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
         # ==================================
         # Core attention computation
         # ==================================
+        if self.config.experimental_attention_variant == 'dsa':
+            if packed_seq_params is None:
+                packed_seq_params = PackedSeqParams()
+            # for easy injection of rotary_pos_emb (patch)
+            packed_seq_params.rotary_pos_emb = rotary_pos_emb
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 q_absorbed,

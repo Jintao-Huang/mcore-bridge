@@ -12,12 +12,22 @@ from ..register import ModelLoader, ModelMeta, register_model
 
 try:
     from megatron.core.transformer.experimental_attention_variant.dsa import (DSAIndexerLossAutoScaler,
-                                                                              DSAIndexerLossLoggingHelper, DSAttention,
-                                                                              FusedDSAIndexerLoss, unfused_dsa_fn)
+                                                                              DSAIndexerLossLoggingHelper)
+    from megatron.core.transformer.experimental_attention_variant.dsa import DSAttention as McoreDSAttention
+    from megatron.core.transformer.experimental_attention_variant.dsa import FusedDSAIndexerLoss, unfused_dsa_fn
 except ImportError:
-    DSAttention = object
+    McoreDSAttention = object
 
 mcore_019 = version.parse(megatron.core.__version__) >= version.parse('0.19.0rc0')
+
+
+class DSAttention(McoreDSAttention):
+
+    def _get_index_share_carrier(self, packed_seq_params, attention_mask):
+        """Return the object that carries DSA top-k sharing state for this forward."""
+        if packed_seq_params is not None and packed_seq_params.qkv_format is not None:
+            return packed_seq_params
+        return attention_mask if attention_mask is not None else self.config
 
 
 class GlmMoeDsaDSAttention(DSAttention):
@@ -170,8 +180,8 @@ class GlmMoeDsaTransformerBlock(TransformerBlock):
 
 
 class GlmMoeDsaLoader(ModelLoader):
-    model_cls = GlmMoeDsaGPTModel
-    transformer_block = GlmMoeDsaTransformerBlock
+    model_cls = GPTModel if mcore_019 else GlmMoeDsaGPTModel
+    transformer_block = TransformerBlock if mcore_019 else GlmMoeDsaTransformerBlock
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         transformer_layer_spec = super().get_transformer_layer_spec(vp_stage)
@@ -181,7 +191,7 @@ class GlmMoeDsaLoader(ModelLoader):
             for layer_spec in transformer_layer_spec.layer_specs:
                 core_attn = layer_spec.submodules.self_attention.submodules.core_attention
                 if hasattr(core_attn, 'module') and issubclass(core_attn.module, DSAttention):
-                    core_attn.module = GlmMoeDsaDSAttention
+                    core_attn.module = DSAttention if mcore_019 else GlmMoeDsaDSAttention
 
         return transformer_layer_spec
 
