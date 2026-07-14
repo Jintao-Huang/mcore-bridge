@@ -280,11 +280,10 @@ class AbsorbedMLASelfAttention(McoreAbsorbedMLASelfAttention):
                     self.core_attention._get_index_share_topk_holder(packed_seq_params, attention_mask)
                     if self.core_attention.index_share else None)
                 if self.core_attention.skip_topk and self.core_attention.source_layer not in topk_holder:
-                    raise ValueError(
-                        f'DSA: Layer {self.layer_number} is a "shared" indexer layer but no '
-                        f'"full" layer precedes it in this PP stage. Please adjust '
-                        f'`--pipeline_model_parallel_layout` to ensure each PP stage starts with a "full" indexer layer. '
-                        f'indexer_types: {self.config.hf_config.indexer_types}.')
+                    raise ValueError(f'DSA: Layer {self.layer_number} is a "shared" indexer layer but no '
+                                     f'"full" layer precedes it in this PP stage. Please adjust '
+                                     f'`--pipeline_model_parallel_layout` to ensure each PP stage starts with '
+                                     f'a "full" indexer layer. indexer_types: {self.config.hf_config.indexer_types}.')
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 q_absorbed,
