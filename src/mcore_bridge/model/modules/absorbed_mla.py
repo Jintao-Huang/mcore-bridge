@@ -2,7 +2,7 @@ try:
     from megatron.core.transformer.experimental_attention_variant.absorbed_mla import \
         AbsorbedMLASelfAttention as McoreAbsorbedMLASelfAttention
 except ImportError:
-    McoreAbsorbedMLASelfAttention = None
+    McoreAbsorbedMLASelfAttention = object
 
 import torch
 from megatron.core import tensor_parallel
