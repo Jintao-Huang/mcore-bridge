@@ -30,12 +30,11 @@ class GlmMoeDsaLoader(ModelLoader):
 
     def get_transformer_layer_spec(self, vp_stage: Optional[int] = None):
         transformer_layer_spec = super().get_transformer_layer_spec(vp_stage)
-        indexer_types = self.config.hf_config.indexer_types
-        if indexer_types is not None and getattr(DSAttention, '_HOLDER_ATTR', None) is None:
+        if self.config.dsa_indexer_topk_freq > 1 and getattr(DSAttention, '_HOLDER_ATTR', None) is None:
             raise ImportError(
                 'Please install the megatron-core main branch to support the "shared" indexer layer of `glm_moe_dsa`: '
                 '`pip install git+https://github.com/NVIDIA/Megatron-LM.git`')
-        if indexer_types is not None:
+        if self.config.dsa_indexer_topk_freq > 1:
             for layer_spec in transformer_layer_spec.layer_specs:
                 core_attn = layer_spec.submodules.self_attention.submodules.core_attention
                 if hasattr(core_attn, 'module') and issubclass(core_attn.module, McoreDSAttention):

@@ -163,7 +163,7 @@ class ModelLoader:
             self_attention = layer_spec.submodules.self_attention
             if self_attention.module is McoreMLASelfAttention:
                 self_attention.module = MLASelfAttention
-            elif self_attention.module.__name__ == 'AbsorbedMLASelfAttention':
+            elif getattr(self_attention.module, '__name__', None) == 'AbsorbedMLASelfAttention':
                 self_attention.module = AbsorbedMLASelfAttention
 
     def _replace_router(self, transformer_layer_spec, mlp_key='mlp'):
