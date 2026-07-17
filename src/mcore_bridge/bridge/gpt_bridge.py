@@ -507,9 +507,9 @@ class GPTBridge:
             if to_mcore:
                 assert mg_param is not None, f'mg_module: {mg_module}, mg_key: {mg_key}'
                 hf_weight = hf_state_dict[hf_key].load()
-                if module_key in {
-                        'embedding.word_embeddings', 'output_layer'
-                } and hf_weight.shape[0] < self.config.padded_vocab_size and self.config.task_type != 'seq_cls':
+                if hf_weight.shape[0] < self.config.padded_vocab_size and (module_key == 'embedding.word_embeddings'
+                                                                           or module_key == 'output_layer'
+                                                                           and self.config.task_type != 'seq_cls'):
                     hf_weight = F.pad(hf_weight, (0, 0, 0, self.config.padded_vocab_size - hf_weight.shape[0]))
                 hf_scale_inv = None
                 if f'{hf_key}_scale_inv' in hf_state_dict:
